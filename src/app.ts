@@ -6,7 +6,7 @@ import { log } from './log.js';
 import { openAndMigrate } from './db/migrate.js';
 import { accountsRepo, type AccountRow } from './db/index.js';
 import { restRoutes } from './api/rest.js';
-import { wsRoutes } from './api/ws.js';
+import { wsRoutes, startConnectorStream } from './api/ws.js';
 import { encrypt, decrypt } from './crypto.js';
 import { verifyToken, extractBearer } from './auth.js';
 import { ProblemError, type Problem, CODE_TO_STATUS, type ProblemCode } from './problem.js';
@@ -98,6 +98,11 @@ export async function buildApp(cfg: AppConfig): Promise<FastifyInstance> {
 
   await app.register(restRoutes);
   await app.register(wsRoutes);
+
+  // Start the per-account connector stream. Persists fills into the
+  // ledger so /v1/fills and /v1/positions see broker activity
+  // whether or not a WS client is currently subscribed.
+  startConnectorStream(deps);
 
   return app;
 }

@@ -92,9 +92,8 @@ export async function wsRoutes(app: FastifyInstance) {
             return;
           }
           conn.subscriptions.add(ch);
-          // When the first client subscribes to fills/orders/account,
-          // pull the connector stream into all current conns.
-          ensureConnectorStream(deps);
+          // Stream pump is started at boot in src/app.ts; nothing to
+          // do here on subscribe beyond tracking the conn interest.
           return;
         }
         case 'unsubscribe': {
@@ -134,10 +133,12 @@ let _streamStarted = false;
 let _streamAbort: AbortController | null = null;
 
 /**
- * Lazily start the connector stream once; rebroadcast its events to
- * all interested WS connections. Idempotent.
+ * Start the per-active-account connector streams exactly once. Called
+ * from src/app.ts at boot so REST reads (e.g., /v1/fills, /v1/positions)
+ * see whatever the broker emits even when no client has subscribed
+ * over WS yet.
  */
-function ensureConnectorStream(deps: Deps): void {
+export function startConnectorStream(deps: Deps): void {
   if (_streamStarted) return;
   _streamStarted = true;
   _streamAbort = new AbortController();
@@ -156,10 +157,24 @@ async function pumpStream(deps: Deps, signal: AbortSignal): Promise<void> {
   // open a stream for each. Sim returns one multiplexed stream per
   // accountRef; in Phase B there's typically exactly one.
 
-  const accountRefs = collectActiveAccountRefs(deps);
-  for (const ref of accountRefs) {
-    void pumpOne(deps, ref, signal);
+  const discovered = new Set<string>();
+  while (!signal.aborted) {
+    const accountRefs = collectActiveAccountRefs(deps);
+    for (const ref of accountRefs) {
+      if (!discovered.has(ref)) {
+        discovered.add(ref);
+        void pumpOne(deps, ref, signal);
+      }
+    }
+    // Re-discover periodically (and immediately after the validator
+    // tick in validator.ts so we don't need to wait a full interval
+    // for new accounts). 5 s is cheap and bounds latency.
+    await sleep(5_000);
   }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((res) => setTimeout(res, ms));
 }
 
 function collectActiveAccountRefs(deps: Deps): string[] {
