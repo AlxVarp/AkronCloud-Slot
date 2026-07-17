@@ -87,6 +87,27 @@ describe('REST: /v1/health', () => {
   });
 });
 
+describe('REST: /connect (broker onboarding)', () => {
+  it('returns 200 with HTML and an embedded bootstrap token', async () => {
+    const res = await app.inject({ method: 'GET', url: '/connect' });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['content-type']).toMatch(/text\/html/);
+    const html = res.body;
+    expect(html).toMatch(/<title>akroncloud-slot — broker onboarding<\/title>/);
+    // The HTML contains a JWT-shaped string (header.payload.signature).
+    expect(html).toMatch(/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/);
+  });
+
+  it('does not require auth', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: '/connect',
+      // intentionally no Authorization header
+    });
+    expect(res.statusCode).toBe(200);
+  });
+});
+
 describe('REST: auth on protected endpoints', () => {
   it('rejects requests without a token', async () => {
     const res = await app.inject({ method: 'POST', url: '/v1/accounts', payload: {} });

@@ -8,6 +8,7 @@ import { validateAccount } from '../validator.js';
 import { enforcePreTrade } from '../risk.js';
 import { startReconciler } from '../reconciler.js';
 import type { NewOrder } from '../connectors/base.js';
+import { signToken } from '../auth.js';
 
 /**
  * REST routes. See SPEC.md § 2.1.
@@ -57,6 +58,113 @@ export type RouteClaims = {
   scope: ('slot:read' | 'slot:write' | 'slot:stream')[];
 };
 
+/**
+ * HTML page rendered at GET /connect. The Phase B-real flow shows a
+ * noVNC iframe pointing at the in-container KasmVNC gateway so the
+ * user can do the broker login in MetaTrader, then submit the same
+ * credentials through the form below (the slot can't see what the
+ * user typed in MT5 directly without a desktop-bridge we haven't
+ * built yet — Phase C). The form mints a one-shot bootstrap JWT so
+ * the browser can POST /v1/accounts without an out-of-band token.
+ */
+function connectPage(opts: { bootstrapToken: string; tenantHint: string }): string {
+  const { bootstrapToken, tenantHint } = opts;
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>akroncloud-slot — broker onboarding</title>
+  <style>
+    body { font-family: -apple-system, system-ui, sans-serif; max-width: 1080px; margin: 0 auto; padding: 24px; color: #111; }
+    h1 { margin: 0 0 8px; font-size: 22px; }
+    p.lede { margin: 0 0 24px; color: #555; font-size: 14px; }
+    .row { display: grid; grid-template-columns: 1.4fr 1fr; gap: 16px; }
+    .pane { border: 1px solid #ddd; border-radius: 8px; overflow: hidden; }
+    .pane h2 { margin: 0; padding: 12px 16px; font-size: 14px; background: #f6f6f6; border-bottom: 1px solid #ddd; }
+    iframe { width: 100%; height: 540px; border: 0; display: block; background: #000; }
+    form { padding: 16px; display: grid; gap: 12px; }
+    label { font-size: 12px; color: #444; display: grid; gap: 4px; }
+    input { font: inherit; padding: 8px 10px; border: 1px solid #ccc; border-radius: 6px; }
+    button { font: inherit; padding: 10px 14px; border: 0; border-radius: 6px; background: #1f6feb; color: white; cursor: pointer; }
+    button[disabled] { background: #888; cursor: not-allowed; }
+    pre.out { background: #0d1117; color: #c9d1d9; padding: 12px; border-radius: 6px; overflow: auto; max-height: 220px; white-space: pre-wrap; }
+    .ok { color: #137333; font-weight: 600; }
+    .err { color: #b3261e; font-weight: 600; }
+    .hint { font-size: 12px; color: #777; }
+  </style>
+</head>
+<body>
+  <h1>akroncloud-slot · broker onboarding</h1>
+  <p class="lede">tenant <code>${tenantHint}</code> · slot runs MetaTrader&nbsp;5 inside this container. Open the desktop on the left, log into your broker, then submit the same credentials below so the slot can encrypt them and the API can take over.</p>
+
+  <div class="row">
+    <div class="pane">
+      <h2>VNC (MetaTrader 5 desktop)</h2>
+      <iframe src="http://localhost:3000" sandbox="allow-same-origin allow-scripts"></iframe>
+    </div>
+
+    <div class="pane">
+      <h2>Submit broker credentials</h2>
+      <form id="f">
+        <label>Broker server (e.g. ICMarkets-Demo01)
+          <input name="server" required autocomplete="off" placeholder="Deriv-Server">
+        </label>
+        <label>MT5 login number
+          <input name="login" required inputmode="numeric" autocomplete="off" placeholder="12345678">
+        </label>
+        <label>MT5 password
+          <input name="password" required type="password" autocomplete="off">
+        </label>
+        <button type="submit" id="go">Submit &amp; take over</button>
+        <p class="hint">Submitting flips the slot from <code>pending_login</code> to <code>operational</code>. The slot encrypts the password (AES-256-GCM, per-tenant derived key), stores it in SQLite, then keeps the broker session open via the in-process connector. From here on, <code>POST /v1/orders</code>, <code>GET /v1/positions</code>, <code>WS /v1/stream</code> etc. all come online.</p>
+      </form>
+      <pre id="out" class="out" hidden></pre>
+    </div>
+  </div>
+
+  <script>
+  const form = document.getElementById('f');
+  const btn = document.getElementById('go');
+  const out = document.getElementById('out');
+  const tok = ${JSON.stringify(bootstrapToken)};
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    btn.disabled = true; btn.textContent = 'Submitting...';
+    out.hidden = false; out.textContent = 'POST /v1/accounts ...';
+    const data = new FormData(form);
+    const body = JSON.stringify({
+      broker: 'mt5',
+      broker_server: data.get('server'),
+      broker_login: data.get('login'),
+      broker_password: data.get('password'),
+    });
+    try {
+      const res = await fetch('/v1/accounts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + tok },
+        body,
+      });
+      const j = await res.json().catch(() => ({}));
+      out.textContent = 'HTTP ' + res.status + '\\n' + JSON.stringify(j, null, 2);
+      if (res.status === 202) {
+        out.classList.add('ok'); out.classList.remove('err');
+      } else {
+        out.classList.add('err'); out.classList.remove('ok');
+        btn.disabled = false; btn.textContent = 'Retry';
+      }
+    } catch (e) {
+      out.textContent = 'Network error: ' + e.message;
+      out.classList.add('err');
+      btn.disabled = false; btn.textContent = 'Retry';
+    }
+  });
+  </script>
+</body>
+</html>`;
+}
+
 export async function restRoutes(app: FastifyInstance) {
   const deps = app.deps as Deps;
 
@@ -70,9 +178,30 @@ export async function restRoutes(app: FastifyInstance) {
     connector: deps.cfg.connectorId,
   }));
 
-  // All /v1/* (except /v1/health) require authentication.
+  // GET /connect — broker-onboarding HTML page. Embedded with a
+  // short-lived bootstrap JWT that the user can present to
+  // POST /v1/accounts without an out-of-band token. This is the
+  // only entry point while the slot is in pending_login. Once the
+  // user POSTs broker creds, the slot flips to operational and the
+  // user gets a full REST/WS API surface.
+  app.get('/connect', async (_req, reply) => {
+    const bootstrap = await signToken(
+      {
+        sub: 'bootstrap',
+        tenant_id: deps.cfg.tenantId,
+        slot_id: deps.cfg.slotId,
+        scope: ['slot:write'],
+      },
+      { secret: deps.cfg.jwtSecret, ttlSeconds: 15 * 60 },
+    );
+    reply.type('text/html').send(
+      connectPage({ bootstrapToken: bootstrap, tenantHint: deps.cfg.tenantId }),
+    );
+  });
+
+  // All /v1/* (except /v1/health and /connect) require authentication.
   app.addHook('onRequest', async (req, _reply) => {
-    if (req.url === '/v1/health') return;
+    if (req.url === '/v1/health' || req.url === '/connect' || req.url?.startsWith('/connect?')) return;
 
     const token = deps.auth.extractBearer(
       req.headers.authorization as string | undefined,
