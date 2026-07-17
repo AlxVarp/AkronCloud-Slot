@@ -19,6 +19,6 @@
     },
     "types": ["node"]
   },
-  "include": ["src/**/*", "tests/**/*", "scripts/**/*"],
-  "exclude": ["node_modules", "dist", "coverage"]
+  "include": ["src/**/*", "scripts/**/*"],
+  "exclude": ["node_modules", "dist", "coverage", "tests"]
 }
