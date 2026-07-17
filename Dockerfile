@@ -36,11 +36,10 @@ RUN apt-get update \
 
 # Slot's runtime artifacts.
 COPY package.json package-lock.json ./
-# Build with the project's npm (Node 18) against the package's
-# engines:>=20.0.0 — node-sqlite3 + drizzle-orm both have prebuilt
-# binaries, so npm ci succeeds even under Node 18 with a warning.
-RUN npm ci --omit=dev --no-audit --no-fund \
- && npm cache clean --force
+# `npm ci` must run under Node 20 so better-sqlite3's prebuilt binary
+# matches. We use the just-installed /opt/node20 binary directly.
+RUN /opt/node20/bin/npm ci --omit=dev --no-audit --no-fund \
+ && /opt/node20/bin/npm cache clean --force
 
 COPY --from=build /app/dist ./dist
 
