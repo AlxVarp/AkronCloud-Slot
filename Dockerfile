@@ -66,7 +66,9 @@ RUN mkdir -p /etc/s6-overlay/s6-rc.d/svc-slot && \
     for d in init-os-end init-envfile init-services; do \
       ln -sfn /etc/s6-overlay/s6-rc.d/$d \
               /etc/s6-overlay/s6-rc.d/svc-slot/dependencies.d/$d; \
-    done
+    done && \
+    # Empty marker file = "include this service in the s6 user bundle".
+    touch /etc/s6-overlay/s6-rc.d/user/contents.d/svc-slot
 
 EXPOSE 7777
 HEALTHCHECK --interval=30s --timeout=3s --start-period=30s --retries=3 \
