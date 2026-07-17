@@ -1,0 +1,14 @@
+.git
+.gitignore
+.github
+node_modules
+dist
+coverage
+*.log
+.env
+.env.local
+.vscode
+.idea
+SPEC.md.legacy-deriv
+README.md.legacy-deriv
+tests/fixtures/

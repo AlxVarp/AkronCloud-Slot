@@ -11,6 +11,8 @@
     "build": "tsc",
     "dev": "tsx watch src/server.ts",
     "start": "node dist/server.js",
+    "dev:token": "tsx scripts/dev-token.ts",
+    "dev:health": "tsx -e \"fetch('http://127.0.0.1:7777/v1/health').then(r=>r.json()).then(j=>console.log(JSON.stringify(j)))\"",
     "lint": "eslint .",
     "test": "vitest run",
     "test:watch": "vitest",
