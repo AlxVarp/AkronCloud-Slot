@@ -27,8 +27,13 @@ WORKDIR /app
 # modules compiled against v18's NODE_MODULE_VERSION, so swapping the
 # system node breaks the desktop. We run the slot with /opt/node20
 # explicitly; everything else in the image keeps using v18.
+#
+# We also install python3+make+g++ so we can rebuild better-sqlite3's
+# native module against Node 20 (the only prebuilt we have is for v18
+# from the base image's earlier npm install).
 RUN apt-get update \
- && apt-get install -y --no-install-recommends curl xz-utils ca-certificates \
+ && apt-get install -y --no-install-recommends \
+      curl xz-utils ca-certificates python3 make g++ \
  && curl -fsSL https://nodejs.org/dist/v20.20.2/node-v20.20.2-linux-x64.tar.xz \
       | tar -Jx -C /opt \
  && ln -sfn /opt/node-v20.20.2-linux-x64 /opt/node20 \
@@ -36,9 +41,8 @@ RUN apt-get update \
 
 # Slot's runtime artifacts.
 COPY package.json package-lock.json ./
-# `npm ci` must run under Node 20 so better-sqlite3's prebuilt binary
-# matches. We use the just-installed /opt/node20 binary directly.
 RUN /opt/node20/bin/npm ci --omit=dev --no-audit --no-fund \
+ && /opt/node20/bin/npm rebuild better-sqlite3 --build-from-source \
  && /opt/node20/bin/npm cache clean --force
 
 COPY --from=build /app/dist ./dist
