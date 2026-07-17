@@ -33,7 +33,10 @@ RUN apt-get update \
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --no-audit --no-fund && npm cache clean --force
 
-# Compiled output + the minimum needed at runtime.
+# Compiled output + the minimum needed at runtime. SQL migrations
+# are inlined as TS template strings (src/db/migrations/) so tsc emits
+# them into dist/db/migrations/ alongside migrate.js — no COPY of
+# raw .sql files needed.
 COPY --from=build /app/dist ./dist
 
 # State DB lives here by default; mount as a volume in compose.

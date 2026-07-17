@@ -1,22 +1,10 @@
-import { mkdirSync, readFileSync, readdirSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
 import Database from 'better-sqlite3';
 import type { Database as DB } from 'better-sqlite3';
-import { fileURLToPath } from 'node:url';
 
 import { log } from '../log.js';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-
-/**
- * Resolve the migrations directory next to this source file.
- * Works under both `tsx` (where __dirname resolves to .ts source) and
- * `tsc`/`node` against compiled JS.
- */
-function migrationsDir(): string {
-  return join(__dirname, 'migrations');
-}
+import { MIGRATIONS, type Migration } from './migrations/index.js';
 
 /**
  * Open the SQLite database at `dbPath`, ensuring its parent dir
@@ -31,7 +19,7 @@ export function openDatabase(dbPath: string): DB {
 }
 
 /**
- * Apply any unapplied migrations under `migrations/` in lexical order.
+ * Apply any unapplied migrations from `MIGRATIONS` in declared order.
  * Records each applied file in `_migrations` (created on first run).
  *
  * Returns the list of migrations that were applied (in order). Safe
@@ -52,34 +40,26 @@ export function applyMigrations(db: DB): string[] {
       .map((r) => (r as { name: string }).name),
   );
 
-  const dir = migrationsDir();
-  let files: string[];
-  try {
-    files = readdirSync(dir)
-      .filter((f) => f.endsWith('.sql'))
-      .sort();
-  } catch (e) {
-    throw new Error(`migrations dir not found: ${dir}`);
-  }
-
-  const inserted: string[] = [];
   const insertStmt = db.prepare(
     `INSERT INTO _migrations (name, applied_at) VALUES (?, ?)`,
   );
 
-  for (const file of files) {
-    if (applied.has(file)) continue;
-    const sql = readFileSync(join(dir, file), 'utf8');
+  const inserted: string[] = [];
+  for (const m of MIGRATIONS as Migration[]) {
+    if (applied.has(m.name)) continue;
     const tx = db.transaction(() => {
-      db.exec(sql);
-      insertStmt.run(file, Date.now());
+      db.exec(m.sql);
+      insertStmt.run(m.name, Date.now());
     });
     try {
       tx();
-      log.info({ migration: file }, 'migration applied');
-      inserted.push(file);
+      log.info({ migration: m.name }, 'migration applied');
+      inserted.push(m.name);
     } catch (e) {
-      log.error({ migration: file, err: (e as Error).message }, 'migration failed');
+      log.error(
+        { migration: m.name, err: (e as Error).message },
+        'migration failed',
+      );
       throw e;
     }
   }

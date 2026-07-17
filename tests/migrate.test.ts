@@ -49,7 +49,7 @@ describe('db: migrations', () => {
     const rows = db
       .prepare(`SELECT name FROM _migrations`)
       .all() as { name: string }[];
-    expect(rows.map((r) => r.name)).toEqual(['0001_init.sql']);
+    expect(rows.map((r) => r.name)).toEqual(['0001_init']);
     db.close();
   });
 
