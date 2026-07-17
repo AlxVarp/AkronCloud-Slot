@@ -1,25 +1,21 @@
 import type { Deps } from './app';
 import type { AccountRow } from './db';
+import { decrypt } from './crypto';
 
 /**
  * Async broker-credential validation worker (SPEC § 1 + § 4.4 + § 7).
  *
- * Phase A: scaffold only. The framework contract is in place so the
- * REST POST /v1/accounts handler can publish a 'validate' job without
- * blocking; Phase B hooks up the real MT5 login via the connector
- * and updates the row to `active` / `error`.
+ * Phase B implementation:
+ *  - decrypts the broker password using SLOT_ENCRYPTION_KEY + tenant salt
+ *  - hands the plaintext creds to the configured connector
+ *  - on success: opens the broker session, flips status='active'
+ *  - on failure: records last_error, flips status='error'
  *
- * Public surface:
- *   validateAccount(deps, tenantId, accountId): kicks a background
- *     validator. The promise resolves when the worker has scheduled
- *     the job — *not* when the credentials have been confirmed.
- *     Subscribers watch the row's `status` (`status` transitions
- *     emit a WS event in Phase B).
+ * The plaintext password buffer is zeroed after use.
  */
-
 export type ValidationOutcome =
-  | { kind: 'ok' }
-  | { kind: 'bad_credentials' }
+  | { kind: 'ok'; accountRef: string }
+  | { kind: 'bad_credentials'; detail?: string }
   | { kind: 'broker_down'; detail: string }
   | { kind: 'unknown_error'; detail: string };
 
@@ -28,13 +24,63 @@ export function validateAccount(
   tenantId: string,
   account: AccountRow,
 ): void {
-  // Fire-and-forget. Real impl (Phase B) starts the broker session,
-  // updates accountsRepo.updateStatus on completion.
   setImmediate(() => {
-    const now = Date.now();
-    deps.log.info({ tenant_id: tenantId, account_id: account.id }, 'validateAccount stub');
-    // Phase A leaves the row in pending_validation. Real impl flips
-    // it to active / error and emits a WS account event.
-    void now;
+    void runValidation(deps, tenantId, account).catch((err) => {
+      deps.log.error(
+        { err: (err as Error).message, account_id: account.id },
+        'validator crashed',
+      );
+    });
   });
+}
+
+async function runValidation(
+  deps: Deps,
+  tenantId: string,
+  account: AccountRow,
+): Promise<void> {
+  const now = Date.now();
+  let plaintext: Buffer | null = null;
+  try {
+    plaintext = decrypt(
+      deps.cfg.encryptionKey,
+      tenantId,
+      account.encrypted_creds,
+    );
+    const creds = {
+      server: account.broker_server,
+      login: account.broker_login,
+      password: plaintext.toString('utf8'),
+    };
+
+    const result = await deps.connector.connect(creds);
+    // Phase B: the validator only confirms the broker session opens.
+    // Phase B-real: openTrade would also key off this accountRef.
+    deps.accounts.updateStatus(
+      tenantId,
+      account.id,
+      'active',
+      now,
+      null,
+      now,
+    );
+    deps.log.info(
+      {
+        tenant_id: tenantId,
+        account_id: account.id,
+        accountRef: result.accountRef,
+        broker: deps.cfg.connectorId,
+      },
+      'account validated',
+    );
+  } catch (e) {
+    const msg = (e as Error).message;
+    deps.accounts.updateStatus(tenantId, account.id, 'error', null, msg, now);
+    deps.log.warn(
+      { tenant_id: tenantId, account_id: account.id, err: msg },
+      'account validation failed',
+    );
+  } finally {
+    if (plaintext) plaintext.fill(0);
+  }
 }

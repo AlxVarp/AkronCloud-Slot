@@ -26,6 +26,7 @@ export type AppConfig = {
   mt5ZmqHost: string;
   mt5ZmqInPort: number;
   mt5ZmqOutPort: number;
+  connectorId: 'sim' | 'mt5';
   riskLimits: RiskLimits;
 };
 
@@ -49,6 +50,7 @@ const schema = z.object({
   SLOT_MT5_ZMQ_IN_PORT: z.coerce.number().int().positive().default(5555),
   SLOT_MT5_ZMQ_OUT_PORT: z.coerce.number().int().positive().default(5556),
   SLOT_RISK_LIMITS_JSON: z.string().optional(),
+  SLOT_CONNECTOR: z.enum(['sim', 'mt5']).default('sim'),
 });
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
@@ -106,6 +108,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     mt5ZmqHost: c.SLOT_MT5_ZMQ_HOST,
     mt5ZmqInPort: c.SLOT_MT5_ZMQ_IN_PORT,
     mt5ZmqOutPort: c.SLOT_MT5_ZMQ_OUT_PORT,
+    connectorId: c.SLOT_CONNECTOR,
     riskLimits,
   };
 }

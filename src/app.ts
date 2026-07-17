@@ -10,6 +10,9 @@ import { wsRoutes } from './api/ws';
 import { encrypt, decrypt } from './crypto';
 import { verifyToken, extractBearer } from './auth';
 import { ProblemError, type Problem, CODE_TO_STATUS, type ProblemCode } from './problem';
+import type { BrokerConnector } from './connectors/base';
+import { makeConnector } from './connectors';
+import { makeLedger, type Ledger } from './ledger';
 
 /**
  * Lightweight dependency container shared by routes + workers.
@@ -21,6 +24,8 @@ export type Deps = {
   cfg: AppConfig;
   db: ReturnType<typeof openAndMigrate>;
   accounts: ReturnType<typeof accountsRepo>;
+  ledger: Ledger;
+  connector: BrokerConnector;
   crypto: { encrypt: typeof encrypt; decrypt: typeof decrypt };
   auth: { verifyToken: typeof verifyToken; extractBearer: typeof extractBearer };
   log: typeof log;
@@ -38,10 +43,13 @@ export async function buildApp(cfg: AppConfig): Promise<FastifyInstance> {
   });
 
   const db = openAndMigrate(cfg.stateDb);
+  const connector = makeConnector(cfg.connectorId);
   const deps: Deps = {
     cfg,
     db,
     accounts: accountsRepo(db),
+    ledger: makeLedger(db),
+    connector,
     crypto: { encrypt, decrypt },
     auth: { verifyToken, extractBearer },
     log,
