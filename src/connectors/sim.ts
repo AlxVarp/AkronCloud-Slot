@@ -13,7 +13,7 @@ import type {
   Quote,
   SymbolSpec,
   OrderStatus,
-} from './base';
+} from './base.js';
 
 /**
  * In-process broker simulator. Implements the same BrokerConnector

@@ -1,4 +1,4 @@
-import type { Deps } from './app';
+import type { Deps } from './app.js';
 import type Database from 'better-sqlite3';
 
 /**

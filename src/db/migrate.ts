@@ -4,7 +4,7 @@ import Database from 'better-sqlite3';
 import type { Database as DB } from 'better-sqlite3';
 import { fileURLToPath } from 'node:url';
 
-import { log } from '../log';
+import { log } from '../log.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);

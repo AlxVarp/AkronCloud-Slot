@@ -1,5 +1,5 @@
-import type { BrokerConnector } from './base';
-import { SimConnector, type SimOptions } from './sim';
+import type { BrokerConnector } from './base.js';
+import { SimConnector, type SimOptions } from './sim.js';
 
 /**
  * Connector registry. Phase B ships the in-process `sim` connector

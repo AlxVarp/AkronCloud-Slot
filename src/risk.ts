@@ -1,6 +1,6 @@
-import type { Deps } from './app';
-import type { NewOrder } from './connectors/base';
-import { ProblemError } from './problem';
+import type { Deps } from './app.js';
+import type { NewOrder } from './connectors/base.js';
+import { ProblemError } from './problem.js';
 
 /**
  * Pre-trade risk gate (SPEC § 5).

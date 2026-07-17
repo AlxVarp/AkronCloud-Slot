@@ -2,8 +2,8 @@ import type { FastifyInstance } from 'fastify';
 import type { WebSocket } from 'ws';
 import { randomUUID } from 'node:crypto';
 
-import type { Deps } from '../app';
-import type { BrokerEvent } from '../connectors/base';
+import type { Deps } from '../app.js';
+import type { BrokerEvent } from '../connectors/base.js';
 
 /**
  * /v1/stream WebSocket upgrade.

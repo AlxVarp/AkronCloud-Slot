@@ -1,18 +1,18 @@
 import Fastify, { type FastifyInstance } from 'fastify';
 import websocket from '@fastify/websocket';
 
-import { type AppConfig } from './config';
-import { log } from './log';
-import { openAndMigrate } from './db/migrate';
-import { accountsRepo, type AccountRow } from './db';
-import { restRoutes } from './api/rest';
-import { wsRoutes } from './api/ws';
-import { encrypt, decrypt } from './crypto';
-import { verifyToken, extractBearer } from './auth';
-import { ProblemError, type Problem, CODE_TO_STATUS, type ProblemCode } from './problem';
-import type { BrokerConnector } from './connectors/base';
-import { makeConnector } from './connectors';
-import { makeLedger, type Ledger } from './ledger';
+import { type AppConfig } from './config.js';
+import { log } from './log.js';
+import { openAndMigrate } from './db/migrate.js';
+import { accountsRepo, type AccountRow } from './db/index.js';
+import { restRoutes } from './api/rest.js';
+import { wsRoutes } from './api/ws.js';
+import { encrypt, decrypt } from './crypto.js';
+import { verifyToken, extractBearer } from './auth.js';
+import { ProblemError, type Problem, CODE_TO_STATUS, type ProblemCode } from './problem.js';
+import type { BrokerConnector } from './connectors/base.js';
+import { makeConnector } from './connectors/index.js';
+import { makeLedger, type Ledger } from './ledger.js';
 
 /**
  * Lightweight dependency container shared by routes + workers.
@@ -118,5 +118,5 @@ declare module 'fastify' {
   }
 }
 
-// Convenience re-export so callers can `import { Problem } from './app'`.
+// Convenience re-export so callers can `import { Problem } from './app.js'`.
 export type { Problem };

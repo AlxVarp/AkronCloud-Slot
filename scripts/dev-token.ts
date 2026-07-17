@@ -14,7 +14,7 @@
  */
 
 import 'dotenv/config';
-import { signToken, ALL_SCOPES, type Scope } from '../src/auth';
+import { signToken, ALL_SCOPES, type Scope } from '../src/auth.js';
 
 type CliOpts = {
   sub: string;

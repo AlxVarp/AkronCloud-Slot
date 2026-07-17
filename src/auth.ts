@@ -1,5 +1,5 @@
 import { SignJWT, jwtVerify } from 'jose';
-import { ProblemError } from './problem';
+import { ProblemError } from './problem.js';
 
 /**
  * Auth — HS256 JWT issue + verify, scoped to the slot.

@@ -1,6 +1,6 @@
-import { buildApp } from './app';
-import { loadConfig } from './config';
-import { log } from './log';
+import { buildApp } from './app.js';
+import { loadConfig } from './config.js';
+import { log } from './log.js';
 
 async function main() {
   const cfg = loadConfig();

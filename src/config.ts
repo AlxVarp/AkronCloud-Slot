@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { loadMasterKey } from './crypto';
+import { loadMasterKey } from './crypto.js';
 import { z } from 'zod';
 
 /**

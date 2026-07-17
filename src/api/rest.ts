@@ -2,12 +2,12 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
 
-import { ProblemError } from '../problem';
-import { toPublicAccount, type Deps } from '../app';
-import { validateAccount } from '../validator';
-import { enforcePreTrade } from '../risk';
-import { startReconciler } from '../reconciler';
-import type { NewOrder } from '../connectors/base';
+import { ProblemError } from '../problem.js';
+import { toPublicAccount, type Deps } from '../app.js';
+import { validateAccount } from '../validator.js';
+import { enforcePreTrade } from '../risk.js';
+import { startReconciler } from '../reconciler.js';
+import type { NewOrder } from '../connectors/base.js';
 
 /**
  * REST routes. See SPEC.md § 2.1.

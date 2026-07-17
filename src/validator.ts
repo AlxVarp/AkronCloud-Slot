@@ -1,6 +1,6 @@
-import type { Deps } from './app';
-import type { AccountRow } from './db';
-import { decrypt } from './crypto';
+import type { Deps } from './app.js';
+import type { AccountRow } from './db/index.js';
+import { decrypt } from './crypto.js';
 
 /**
  * Async broker-credential validation worker (SPEC § 1 + § 4.4 + § 7).
