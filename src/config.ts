@@ -29,17 +29,11 @@ export type AppConfig = {
   riskLimits: RiskLimits;
 };
 
-const riskLimitsSchema = z
-  .object({
-    max_position_size: z.number().min(0),
-    max_daily_loss_pct: z.number().min(0).max(100),
-    kill_switch_active: z.boolean(),
-  })
-  .default({
-    max_position_size: 0,
-    max_daily_loss_pct: 100,
-    kill_switch_active: false,
-  });
+const riskLimitsSchema = z.object({
+  max_position_size: z.number().min(0).default(0),
+  max_daily_loss_pct: z.number().min(0).max(100).default(100),
+  kill_switch_active: z.boolean().default(false),
+});
 
 const schema = z.object({
   SLOT_TENANT_ID: z.string().min(1),
