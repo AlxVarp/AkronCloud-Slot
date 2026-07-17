@@ -191,8 +191,10 @@ export async function restRoutes(app: FastifyInstance) {
     enforcePreTrade(deps, newOrder);
 
     // Place in the connector first so the broker_order_id maps back
-    // into our ledger row.
-    const accountRef = `sim-${acct.id}`;
+    // into our ledger row. The SimConnector (and the future real
+    // MT5 connector) deterministically derives its accountRef from
+    // (broker_server, broker_login).
+    const accountRef = `sim-${acct.broker_server}-${acct.broker_login}`;
     const result = await deps.connector.openTrade(accountRef, newOrder);
     if (!result.ok) {
       deps.accounts.updateStatus(
@@ -337,7 +339,7 @@ export async function restRoutes(app: FastifyInstance) {
         title: 'Account not found',
       });
     }
-    const accountRef = `sim-${acct.id}`;
+    const accountRef = `sim-${acct.broker_server}-${acct.broker_login}`;
     let connectorState;
     try {
       connectorState = await deps.connector.state(accountRef);
@@ -374,7 +376,7 @@ export async function restRoutes(app: FastifyInstance) {
         title: 'Account not found',
       });
     }
-    const accountRef = `sim-${acct.id}`;
+    const accountRef = `sim-${acct.broker_server}-${acct.broker_login}`;
     const st = await deps.connector.state(accountRef);
     return {
       account_id: acct.id,

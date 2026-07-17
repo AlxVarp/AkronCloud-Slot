@@ -88,8 +88,12 @@ export class SimConnector implements BrokerConnector {
 
   async connect(creds: BrokerCreds): Promise<{ accountRef: string }> {
     await sleep(50);
+    // Derive the accountRef deterministically from (server, login) so
+    // rest.ts can address the same session via `sim-<server>-<login>`
+    // without keeping a side-table. The ref id is what the rest of
+    // the slot uses to dispatch orders/positions/state calls.
     const ref: SimAccountRef = {
-      id: 'sim-' + randomUUID(),
+      id: `sim-${creds.server}-${creds.login}`,
       broker_server: creds.server,
       broker_login: creds.login,
       initial_balance: this.initialBalance,
@@ -100,6 +104,7 @@ export class SimConnector implements BrokerConnector {
       positions: new Map(),
       balance: this.initialBalance,
     });
+    void randomUUID; // (kept available for future fresh-id refactors)
     const evt: AccountEvent = { kind: 'login' };
     this.emit({ kind: 'account', data: evt });
     return { accountRef: ref.id };

@@ -201,22 +201,23 @@ export const makeLedger = (db: DB): Ledger => {
     },
 
     positionsFor(account_id: string): Position[] {
-      // Use the FILL stream as ground truth for qty/avg-price, since
-      // partial fills are the common case. We net by instrument.
+      // Use the FILL stream as ground truth for qty/avg-price; pull
+      // side from the parent order via LEFT JOIN. We net by
+      // instrument (buy +qty, sell -qty) and compute a weighted
+      // average entry price across open lots.
       const rows = db
         .prepare(
-          `SELECT instrument,
-                  qty, price, side, order_id, ts
-             FROM fills
-            WHERE account_id = ?
-            ORDER BY ts ASC`,
+          `SELECT f.instrument, f.qty, f.price, o.side, f.ts
+             FROM fills f
+             LEFT JOIN orders o ON f.order_id = o.id
+            WHERE f.account_id = ?
+            ORDER BY f.ts ASC`,
         )
         .all(account_id) as Array<{
         instrument: string;
         qty: number;
         price: number;
-        side: OrderSide;
-        order_id: string;
+        side: OrderSide | null;
         ts: number;
       }>;
 
@@ -224,7 +225,8 @@ export const makeLedger = (db: DB): Ledger => {
       const lots = new Map<string, number>();
       const sumPx = new Map<string, number>();
       for (const f of rows) {
-        const sign = f.side === 'buy' ? 1 : -1;
+        const fillSide: OrderSide = f.side ?? 'buy';
+        const sign = fillSide === 'buy' ? 1 : -1;
         lots.set(
           f.instrument,
           (lots.get(f.instrument) ?? 0) + sign * f.qty,

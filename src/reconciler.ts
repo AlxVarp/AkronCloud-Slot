@@ -52,7 +52,7 @@ async function tick(deps: Deps): Promise<void> {
     .prepare(`SELECT id, broker_server, broker_login FROM accounts WHERE status = 'active'`)
     .all() as { id: string; broker_server: string; broker_login: string }[];
   for (const r of rows) {
-    const accountRef = `sim-${r.id}`;
+    const accountRef = `sim-${r.broker_server}-${r.broker_login}`;
     let connectorPos;
     try {
       connectorPos = await deps.connector.positions(accountRef);

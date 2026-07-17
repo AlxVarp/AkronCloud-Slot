@@ -163,12 +163,13 @@ async function pumpStream(deps: Deps, signal: AbortSignal): Promise<void> {
 }
 
 function collectActiveAccountRefs(deps: Deps): string[] {
-  // Discover active accounts by listing all rows. Cheaper alternatives
-  // (an in-memory map updated on insert) land in Phase B+1 if needed.
+  // Match the SimConnector's deterministic accountRef scheme.
   const rows = deps.db
-    .prepare(`SELECT id FROM accounts WHERE status = 'active'`)
-    .all() as { id: string }[];
-  return rows.map((r) => `sim-${r.id}`);
+    .prepare(
+      `SELECT broker_server, broker_login FROM accounts WHERE status = 'active'`,
+    )
+    .all() as { broker_server: string; broker_login: string }[];
+  return rows.map((r) => `sim-${r.broker_server}-${r.broker_login}`);
 }
 
 async function pumpOne(deps: Deps, accountRef: string, signal: AbortSignal): Promise<void> {
