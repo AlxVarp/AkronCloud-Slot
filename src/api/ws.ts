@@ -253,6 +253,20 @@ function handleFill(
   const owner = rows[0]?.account_id;
   if (!owner) return;
 
+  // Dedup: if we've already inserted a fill with this
+  // (broker_order_id, ts) pair, skip. The pump's iterator may yield
+  // the same event twice if the underlying broker/sim re-emits.
+  const seen = deps.db
+    .prepare(
+      `SELECT 1 FROM fills
+        WHERE account_id = ?
+          AND ts = ?
+          AND order_id = (SELECT id FROM orders WHERE broker_order_id = ? AND account_id = ?)
+        LIMIT 1`,
+    )
+    .get(owner, fill.ts, fill.broker_order_id, owner);
+  if (seen) return;
+
   const orderRow = deps.ledger.getOrderByBrokerId(owner, fill.broker_order_id);
   deps.ledger.insertFill({
     order_id: orderRow?.id ?? null,
