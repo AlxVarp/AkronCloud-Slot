@@ -1,19 +1,27 @@
 # ───────────── build stage ─────────────
+# Run npm ci + tsc here. Build tools + Node 20 are present, so the
+# better-sqlite3 native module gets compiled against Node 20's ABI.
+# Copy the result into the runtime stage so the runtime stage doesn't
+# need make/g++/python3 at all.
 ARG NODE_IMAGE=node:20-bookworm-slim
 FROM ${NODE_IMAGE} AS build
 
 WORKDIR /app
 
+# Build-time tools for `better-sqlite3` native compilation.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends python3 make g++ ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
+# Install ALL dependencies (dev + prod) so better-sqlite3 compiles
+# against Node 20's NODE_MODULE_VERSION 115. Then prune dev deps for
+# the runtime image.
 COPY package.json package-lock.json ./
 RUN npm ci --no-audit --no-fund
 
 COPY tsconfig.json tsconfig.build.json ./
 COPY src ./src
-RUN npm run build
+RUN npm run build && npm prune --omit=dev
 
 # ───────────── runtime stage ─────────────
 # Layer on top of the existing akron-mt5-base (Wine + MetaTrader 5 +
@@ -27,24 +35,16 @@ WORKDIR /app
 # modules compiled against v18's NODE_MODULE_VERSION, so swapping the
 # system node breaks the desktop. We run the slot with /opt/node20
 # explicitly; everything else in the image keeps using v18.
-#
-# We also install python3+make+g++ so we can rebuild better-sqlite3's
-# native module against Node 20 (the only prebuilt we have is for v18
-# from the base image's earlier npm install).
 RUN apt-get update \
- && apt-get install -y --no-install-recommends \
-      curl xz-utils ca-certificates python3 make g++ \
+ && apt-get install -y --no-install-recommends curl xz-utils ca-certificates \
  && curl -fsSL https://nodejs.org/dist/v20.20.2/node-v20.20.2-linux-x64.tar.xz \
       | tar -Jx -C /opt \
  && ln -sfn /opt/node-v20.20.2-linux-x64 /opt/node20 \
  && rm -rf /var/lib/apt/lists/*
 
-# Slot's runtime artifacts.
-COPY package.json package-lock.json ./
-RUN /opt/node20/bin/npm ci --omit=dev --no-audit --no-fund \
- && /opt/node20/bin/npm rebuild better-sqlite3 --build-from-source \
- && /opt/node20/bin/npm cache clean --force
-
+# Slot's runtime artifacts. node_modules shipped pre-built by the
+# build stage (so better-sqlite3 already targets Node 20's ABI).
+COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 
 # State DB lives here by default; mount as a volume in compose.
