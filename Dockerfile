@@ -50,8 +50,12 @@ RUN mkdir -p /var/lib/akron-slot
 ENV NODE_ENV=production \
     SLOT_STATE_DB=/var/lib/akron-slot/state.db \
     SLOT_BIND=0.0.0.0 \
-    SLOT_PORT=7777 \
-    PATH=/opt/node20/bin:$PATH
+    SLOT_PORT=7777
+# Intentionally do NOT prepend /opt/node20/bin to PATH — the KasmVNC
+# services (svc-kclient, svc-nginx) invoke `node` and depend on the
+# v18 ABI of their native modules. We let the base image keep its
+# /usr/bin/node (v18) untouched; the slot runs via the explicit
+# absolute path /opt/node20/bin/node below.
 
 # Slot s6 service — runs after init-os-end, init-envfile, init-services.
 RUN mkdir -p /etc/s6-overlay/s6-rc.d/svc-slot && \
