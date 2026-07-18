@@ -120,12 +120,13 @@ export function startLoginDetector(opts: StartLoginDetectorOpts): () => void {
 
   const tick = async (): Promise<void> => {
     if (stopped || triggered) return;
-    if (readSlotState() === 'operational') {
+    if (readSlotState(stateFile) === 'operational') {
       triggered = true;
       log.info('state already operational — exiting detector loop');
       return;
     }
     const ok = await isLoggedIn();
+    log.info({ ok }, 'login-detector tick');
     if (ok) {
       triggered = true;
       try {
