@@ -99,6 +99,7 @@ RUN chmod +x /config/.config/openbox/autostart \
 # akron-mt5-base) under an Xvfb so metaeditor can open its dummy
 # UI. This is the same trick the parent akron-mt5-base uses to bake
 # PublisherZMQEvents.ex5 into the base image.
+COPY mql5/ /tmp/mql5/
 RUN apt-get update \
  && apt-get install -y --no-install-recommends xvfb \
  && rm -rf /var/lib/apt/lists/* \
