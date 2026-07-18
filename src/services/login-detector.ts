@@ -47,11 +47,11 @@ async function isLoggedIn(): Promise<boolean> {
     const lines = stdout.split('\n').filter((l) => l.trim());
     let mt5Windows = 0;
     for (const line of lines) {
-      // wmctrl -lx output: "<id> <desktop> <instance.class> <host> <title>..."
-      // The instance.class field can be 1 or 2 tokens depending on the
-      // app. wmctrl uses variable whitespace; safest to split on 2+ spaces
-      // and reconstruct the class. Title is everything after the host.
-      const parts = line.trim().split(/\s{2,}/);
+      // wmctrl -lx with default 1-space separators: <id> <desktop>
+      // <instance.class> <host> <title words...>. The 3rd field has a
+      // dot in it (instance.class) but no spaces. After splitting on
+      // \s+, the title becomes multiple parts; we rejoin them.
+      const parts = line.trim().split(/\s+/);
       if (parts.length < 5) continue;
       const wmClass = parts[2] ?? '';
       const title = parts.slice(4).join(' ').trim();
