@@ -100,7 +100,7 @@ RUN chmod +x /config/.config/openbox/autostart \
 # for the source) and committed to the repo, then baked into the
 # image at the right path. If the file is missing, the build fails
 # fast so we don't ship a broken image.
-COPY mql5/SlotService.ex5 /config/.wine/drive_c/users/abc/MetaTrader 5/MQL5/Services/SlotService.ex5
+COPY ["mql5/SlotService.ex5", "/config/.wine/drive_c/users/abc/MetaTrader 5/MQL5/Services/SlotService.ex5"]
 RUN chown abc:abc \
    /config/.wine/drive_c/users/abc/MetaTrader\ 5/MQL5/Services/SlotService.ex5
 
