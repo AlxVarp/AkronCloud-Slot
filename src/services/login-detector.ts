@@ -47,13 +47,15 @@ async function isLoggedIn(): Promise<boolean> {
     const lines = stdout.split('\n').filter((l) => l.trim());
     let mt5Windows = 0;
     for (const line of lines) {
-      // wmctrl -l output: "<window-id> <desktop> <host> <pid> <class> <title>..."
-      // wmctrl -lx adds WM_CLASS, so fields shift. Be permissive.
-      const m = line.match(/^\s*0x\w+\s+\S+\s+\S+\s+\S+\s+(\S+)\s+(.*)$/);
-      if (!m) continue;
-      const wmClass = m[1] ?? '';
-      const title = (m[2] ?? '').trim();
-      if (!/^terminal64\.exe(\.|$)/i.test(wmClass)) continue;
+      // wmctrl -lx output: "<id> <desktop> <instance.class> <host> <title>..."
+      // The instance.class field can be 1 or 2 tokens depending on the
+      // app. wmctrl uses variable whitespace; safest to split on 2+ spaces
+      // and reconstruct the class. Title is everything after the host.
+      const parts = line.trim().split(/\s{2,}/);
+      if (parts.length < 5) continue;
+      const wmClass = parts[2] ?? '';
+      const title = parts.slice(4).join(' ').trim();
+      if (!/terminal64\.exe/i.test(wmClass)) continue;
       mt5Windows++;
       if (!title) continue;
       // Pre-login: "Login" or "MetaTrader 5 - Login"
