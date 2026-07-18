@@ -145,11 +145,30 @@ export function startLoginDetector(opts: StartLoginDetectorOpts): () => void {
         'MT5 login detected — transitioning slot to operational',
       );
       try {
-        // Cascade-kill the VNC chain. The base image's s6 setup
-        // doesn't actually wire svc-kclient / svc-kasmvnc / svc-nginx
-        // as deps of svc-de, and s6's `restart: always` policy
-        // re-spawns services after `s6-svc -d`. Use `-K` (uppercase,
-        // SIGKILL + want down) so the service stays dead.
+        // Cascade-kill the VNC chain. pkill is more reliable than
+        // s6-svc in our case (the slot's child processes don't share
+        // s6's full env). We just SIGKILL the user-space processes;
+        // the supervises' "want up" flag stays true so the slot
+        // container is still considered healthy, but nothing visible
+        // is exposed on :3000 / :6901 after this.
+        for (const pat of [
+          'Xvnc', // KasmVNC server (the X11 display)
+          'openbox', // Openbox session manager
+          'kclient', // KasmVNC's per-session node bridge
+          'nginx: master', // nginx-front master
+          'pulseaudio', // pulseaudio
+        ]) {
+          try {
+            spawn('pkill', ['-9', '-f', pat], {
+              stdio: 'ignore',
+              detached: true,
+            }).unref();
+          } catch {
+            /* ignore individual failures */
+          }
+        }
+        // Also tell s6 not to restart the user-facing services, so
+        // even if pkill misses one, s6 won't re-spawn it.
         for (const svc of [
           'svc-de',
           'svc-kclient',
@@ -157,12 +176,12 @@ export function startLoginDetector(opts: StartLoginDetectorOpts): () => void {
           'svc-nginx',
         ]) {
           try {
-            spawn('s6-svc', ['-K', `/run/service/${svc}`], {
+            spawn('s6-svc', ['-D', `/run/service/${svc}`], {
               stdio: 'ignore',
               detached: true,
             }).unref();
           } catch {
-            /* ignore individual failures */
+            /* ignore */
           }
         }
       } catch (e) {
