@@ -145,30 +145,23 @@ export function startLoginDetector(opts: StartLoginDetectorOpts): () => void {
         'MT5 login detected — transitioning slot to operational',
       );
       try {
-        // Cascade-kill the VNC chain. pkill is more reliable than
-        // s6-svc in our case (the slot's child processes don't share
-        // s6's full env). We just SIGKILL the user-space processes;
-        // the supervises' "want up" flag stays true so the slot
-        // container is still considered healthy, but nothing visible
-        // is exposed on :3000 / :6901 after this.
+        // Cascade-kill the VNC chain synchronously so we know each
+        // step succeeded before moving on. pkill -9 -f <pattern>
+        // matches the process command line. s6-svc -D marks the
+        // service as `want down` so it doesn't restart.
         for (const pat of [
-          'Xvnc', // KasmVNC server (the X11 display)
-          'openbox', // Openbox session manager
-          'kclient', // KasmVNC's per-session node bridge
-          'nginx: master', // nginx-front master
-          'pulseaudio', // pulseaudio
+          'Xvnc',
+          'openbox',
+          'kclient',
+          'nginx: master',
+          'pulseaudio',
         ]) {
           try {
-            spawn('pkill', ['-9', '-f', pat], {
-              stdio: 'ignore',
-              detached: true,
-            }).unref();
+            execFileSync('pkill', ['-9', '-f', pat], { stdio: 'ignore' });
           } catch {
-            /* ignore individual failures */
+            /* pkill exits 1 if no process matched — that's fine */
           }
         }
-        // Also tell s6 not to restart the user-facing services, so
-        // even if pkill misses one, s6 won't re-spawn it.
         for (const svc of [
           'svc-de',
           'svc-kclient',
@@ -176,14 +169,14 @@ export function startLoginDetector(opts: StartLoginDetectorOpts): () => void {
           'svc-nginx',
         ]) {
           try {
-            spawn('s6-svc', ['-D', `/run/service/${svc}`], {
+            execFileSync('s6-svc', ['-D', `/run/service/${svc}`], {
               stdio: 'ignore',
-              detached: true,
-            }).unref();
+            });
           } catch {
-            /* ignore */
+            /* ignore — s6 may not be visible to slot's child env */
           }
         }
+        log.info('VNC chain killed — slot is now operational');
       } catch (e) {
         log.warn(
           { err: (e as Error).message },
