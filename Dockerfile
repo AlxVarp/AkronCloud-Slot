@@ -130,6 +130,11 @@ if [ -f "$EX5" ]; then
   echo "[mt5-compile] SlotService.ex5 already present, skipping"
   exit 0
 fi
+# Wine needs DISPLAY + XDG_RUNTIME_DIR to run any Windows GUI
+# process (even a headless compile). with-contenv exposes the
+# container's env; we set these here so metaeditor finds its sockets.
+export DISPLAY=:0
+export XDG_RUNTIME_DIR=/run/user/0
 cd /config/.wine/drive_c/users/abc/MetaTrader 5/MQL5/Services || exit 1
 WINEDEBUG=-all /opt/wine-stable/bin/wine \
   "Z:\\users\\abc\\MetaTrader 5\\metaeditor64.exe" \
