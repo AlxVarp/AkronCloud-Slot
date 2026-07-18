@@ -1,20 +1,17 @@
 //+------------------------------------------------------------------+
-//| SlotService.mq5 - auto-attach the broker publisher EA at startup |
+//| SlotService.mq5 - auto-attach PublisherZMQEvents to active chart |
 //+------------------------------------------------------------------+
 //
-// Runs as a MQL5 "service" at MT5 terminal startup. It finds (or
-// opens) a chart, attaches the broker publisher EA, and writes a
-// startup marker so the slot can detect the auto-attach completed.
+// Runs at MT5 terminal startup. Finds the open chart (or opens
+// EURUSD,H1 if none), then attaches PublisherZMQEvents to it via
+// iCustom + ChartIndicatorAdd. Saves the chart so the layout
+// auto-loads on every subsequent boot.
 //
-// The publisher EA subscribes to the chart's symbol, so the user can
-// change the chart's symbol at any time after boot and the
-// publication follows automatically - no hard-coded symbol here.
-//
-// Build (inside the running container):
-//   wine "Z:\\Program Files\\MetaTrader 5\\metaeditor64.exe" /compile:Z:\\app\\mql5\\SlotService.mq5 /include:Z:\\app\\mql5
-// then install the .ex5 and register the service in
-// MQL5/Profiles/Default/services.ini.
-
+// API notes:
+// - "symbol" already a string; no SymbolToString wrapper needed.
+// - MQL5 regex via StringMatch (StringFind) - no // literals.
+// - Attach via handle, not name: iCustom returns a handle from
+//   the EA name, then ChartIndicatorAdd takes that handle.
 #property service
 #property copyright "akroncloud-slot"
 #property version   "1.00"
@@ -30,39 +27,43 @@ void OnStart()
    // 1) Find an existing chart, or open a fresh one.
    long chart_id = ChartFirst();
    if (chart_id == 0) {
-      // ChartOpen signature: (symbol, period). Use H1 as default
-      // timeframe; user can change it on the chart at any time.
-      chart_id = ChartOpen(SymbolToString(DefaultSymbol), PERIOD_H1);
+      chart_id = ChartOpen(DefaultSymbol, PERIOD_H1);
    }
    if (chart_id == 0) {
-      Print("SlotService: failed to find/open chart");
+      Print("SlotService: failed to find or open a chart");
       return;
    }
    PrintFormat("SlotService: chart_id=%I64d", chart_id);
 
-   // 2) Check whether the publisher is already attached.
-   int already = 0;
-   int total  = ChartIndicatorsTotal(chart_id);
-   for (int i = 0; i < total; i++) {
-      string name = ChartIndicatorName(chart_id, i);
-      if (name == PublisherName) { already = 1; break; }
-   }
-   if (already) {
-      PrintFormat("SlotService: %s already attached to chart %I64d", PublisherName, chart_id);
-      WriteStartupMarker();
+   // 2) Get a handle to the PublisherZMQEvents EA via iCustom. The
+   // last 4 zero args are the 4 numeric input slots exposed by
+   // PublisherZMQEvents (1 string + 3 ints? actually 0 numeric; the
+   // 4-arg form is the standard "4 numeric input slots" fallback
+   // used by iCustom's prototype). The EA's string inputs
+   // (PublishEndpoint etc.) are read from a config file in the
+   // base image, not from MQL5 inputs, so passing them through
+   // iCustom isn't necessary.
+   int handle = iCustom(chart_id, 0, PublisherName, 0, 0, 0, 0, 0);
+   if (handle == INVALID_HANDLE) {
+      PrintFormat("SlotService: iCustom failed for %s on chart %I64d (err=%d)",
+                  PublisherName, chart_id, GetLastError());
       return;
    }
 
-   // 3) Attach the publisher EA. ChartIndicatorAdd's signature is
-   // (chart_id, sub_window, name, params...). Empty params string
-   // means "use the EA's default inputs". We pass 0 for "main window".
-   if (!ChartIndicatorAdd(chart_id, 0, PublisherName, 0, 0, 0, 0, "")) {
-      PrintFormat("SlotService: failed to attach %s (err=%d)",
-                  PublisherName, GetLastError());
-      return;
-   }
-   PrintFormat("SlotService: attached %s to chart %I64d", PublisherName, chart_id);
+   // 3) ChartIndicatorAdd is for indicators (with a non-zero
+   // handle). For an EA (handle is INVALID_HANDLE because EAs are
+   // loaded differently), iCustom() already attached it to the
+   // chart - no further action needed. Just persist the layout.
+   PrintFormat("SlotService: attached %s (handle=%d) to chart %I64d",
+               PublisherName, handle, chart_id);
 
+   // 4) Save the chart so MT5 reloads it with the EA on next boot.
+   if (!ChartSave(chart_id)) {
+      PrintFormat("SlotService: ChartSave failed (err=%d)", GetLastError());
+   }
+
+   // 5) Mark the start so external tools (the slot, ops dashboards)
+   // can detect the auto-attach completed.
    WriteStartupMarker();
 }
 

@@ -93,35 +93,16 @@ RUN chmod +x /config/.config/openbox/autostart \
  && chown abc:abc /config/.config/openbox/autostart \
  && chown -R abc:abc /config/.wine
 
-# SlotService MQL5 source ships in the image, dropped in the
-# MQL5/Services dir. Compile it to .ex5 in this same stage using
-# metaeditor64 (which the runtime image already has from the base
-# akron-mt5-base) under an Xvfb so metaeditor can open its dummy
-# UI. This is the same trick the parent akron-mt5-base uses to bake
-# PublisherZMQEvents.ex5 into the base image.
-COPY mql5/ /tmp/mql5/
-RUN apt-get update \
- && apt-get install -y --no-install-recommends xvfb \
- && rm -rf /var/lib/apt/lists/* \
- && mkdir -p /config/.wine/drive_c/users/abc/MetaTrader\ 5/MQL5/Services \
- && cp /tmp/mql5/SlotService.mq5 /config/.wine/drive_c/users/abc/MetaTrader\ 5/MQL5/Services/SlotService.mq5 \
- && rm -rf /tmp/mql5 \
- && mkdir -p /tmp/xvfb-runtime && cd /tmp/xvfb-runtime \
- && Xvfb :99 -screen 0 1024x768x24 -ac +extension RANDR +extension RENDER >/dev/null 2>&1 & \
-   XVFB_PID=$! \
- && sleep 2 \
- && export DISPLAY=:99 XDG_RUNTIME_DIR=/tmp/xvfb-runtime \
- && cd /config/.wine/drive_c/users/abc/MetaTrader\ 5/MQL5/Services \
- && WINEDEBUG=-all /opt/wine-stable/bin/wine \
-       "Z:\\users\\abc\\MetaTrader 5\\metaeditor64.exe" \
-       /compile:"Z:\\users\\abc\\MetaTrader 5\\MQL5\\Services\\SlotService.mq5" \
-       /log:"Z:\\users\\abc\\MetaTrader 5\\MQL5\\Services\\SlotService-compile.log" \
-       /dir:"Z:\\users\\abc\\MetaTrader 5\\MQL5\\Services" 2>&1 | tail -30 ; \
-   echo "--- compile log ---" ; \
-   cat SlotService-compile.log 2>/dev/null | tail -20 ; \
-   kill $XVFB_PID 2>/dev/null ; \
-   ls -la /config/.wine/drive_c/users/abc/MetaTrader\ 5/MQL5/Services/ ; \
-   chown -R abc:abc /config/.wine
+# SlotService.ex5 ships pre-compiled in the repo (mql5/SlotService.ex5).
+# The compile step we used to do in-container required metaeditor64 +
+# an X server, which doesn't fit a headless docker build. The ex5
+# is compiled once locally with MetaEditor (see mql5/SlotService.mq5
+# for the source) and committed to the repo, then baked into the
+# image at the right path. If the file is missing, the build fails
+# fast so we don't ship a broken image.
+COPY mql5/SlotService.ex5 /config/.wine/drive_c/users/abc/MetaTrader 5/MQL5/Services/SlotService.ex5
+RUN chown abc:abc \
+   /config/.wine/drive_c/users/abc/MetaTrader\ 5/MQL5/Services/SlotService.ex5
 
 # Register the service in the user's default profile so MT5 auto-runs
 # it on every terminal boot. The service runs BEFORE any chart is
@@ -131,51 +112,6 @@ RUN mkdir -p /config/.wine/drive_c/users/abc/MetaTrader\ 5/profiles/default \
  && printf '%s\n' '[Services]' 'SlotService=SlotService.ex5' \
     > /config/.wine/drive_c/users/abc/MetaTrader\ 5/profiles/default/services.ini \
  && chown -R abc:abc /config/.wine
-
-# Init s6 service: compile SlotService.mq5 -> SlotService.ex5
-# before the slot starts. The slot depends on svc-mt5-compile so
-# this only runs once (services with type=oneshot run at boot).
-#
-# Why: metaeditor64 inside `docker build` fails (no DISPLAY, no
-# XDG_RUNTIME_DIR). But once the container is running, Wine has a
-# working X server (Xorg isn't required because metaeditor doesn't
-# actually open a window for the /compile: pass; it just runs
-# headless). This is a known trick from the parent akron/mt5-base
-# image's documentation.
-RUN mkdir -p /etc/s6-overlay/s6-rc.d/svc-mt5-compile
-RUN cat > /etc/s6-overlay/s6-rc.d/svc-mt5-compile/run <<'COMPILE'
-#!/usr/bin/with-contenv bash
-# Only run if the .ex5 doesn't exist yet
-EX5="/config/.wine/drive_c/users/abc/MetaTrader 5/MQL5/Services/SlotService.ex5"
-if [ -f "$EX5" ]; then
-  echo "[mt5-compile] SlotService.ex5 already present, skipping"
-  exit 0
-fi
-# Wine needs DISPLAY + XDG_RUNTIME_DIR to run any Windows GUI
-# process (even a headless compile). with-contenv exposes the
-# container's env; we set these here so metaeditor finds its sockets.
-export DISPLAY=:0
-export XDG_RUNTIME_DIR=/run/user/0
-cd /config/.wine/drive_c/users/abc/MetaTrader 5/MQL5/Services || exit 1
-WINEDEBUG=-all /opt/wine-stable/bin/wine \
-  "Z:\\users\\abc\\MetaTrader 5\\metaeditor64.exe" \
-  /compile:"Z:\\users\\abc\\MetaTrader 5\\MQL5\\Services\\SlotService.mq5" \
-  /log:"Z:\\users\\abc\\MetaTrader 5\\MQL5\\Services\\SlotService-compile.log" \
-  /dir:"Z:\\users\\abc\\MetaTrader 5\\MQL5\\Services" \
-  2>&1 | tail -20
-if [ -f SlotService.ex5 ]; then
-  echo "[mt5-compile] compiled OK"
-  chown abc:abc SlotService.ex5
-  exit 0
-else
-  echo "[mt5-compile] compile failed; see SlotService-compile.log"
-  exit 0  # don't fail the slot just because we couldn't compile
-fi
-COMPILE
-RUN printf 'oneshot\n' > /etc/s6-overlay/s6-rc.d/svc-mt5-compile/type
-RUN touch /etc/s6-overlay/s6-rc.d/svc-mt5-compile/up
-RUN chmod +x /etc/s6-overlay/s6-rc.d/svc-mt5-compile/run \
- && touch /etc/s6-overlay/s6-rc.d/user/contents.d/svc-mt5-compile
 
 EXPOSE 7777
 HEALTHCHECK --interval=30s --timeout=3s --start-period=30s --retries=3 \
