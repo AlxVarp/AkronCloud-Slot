@@ -43,12 +43,13 @@ export async function buildApp(cfg: AppConfig): Promise<FastifyInstance> {
   });
 
   const db = openAndMigrate(cfg.stateDb);
-  const connector = makeConnector(cfg.connectorId);
+  const ledger = makeLedger(db);
+  const connector = makeConnector(cfg.connectorId, { db, ledger });
   const deps: Deps = {
     cfg,
     db,
     accounts: accountsRepo(db),
-    ledger: makeLedger(db),
+    ledger,
     connector,
     crypto: { encrypt, decrypt },
     auth: { verifyToken, extractBearer },

@@ -1,13 +1,18 @@
 import type { BrokerConnector } from './base.js';
 import { SimConnector, type SimOptions } from './sim.js';
+import { Mt5Connector, type Mt5ConnectorOpts } from './mt5.js';
+import type { Database as DB } from 'better-sqlite3';
+import type { Ledger } from '../ledger.js';
 
 /**
- * Connector registry. Phase B ships the in-process `sim` connector
- * and keeps the real `mt5` entry as a stub that throws once Phase
- * B-real lands against the akron-mt5-base runtime's ZMQ bridge.
+ * Connector registry.
  *
  * The factory pattern lets us lazily load native deps (the real MT5
  * connector pulls in `zeromq` only when actually used).
+ *
+ * `sim` — in-process simulator, no native deps.
+ * `mt5` — real ZMQ-backed connector to the embedded MT5 terminal.
+ *   Requires `db` + `ledger` in the opts (see Mt5ConnectorOpts).
  */
 export const CONNECTORS: Record<
   string,
@@ -15,15 +20,27 @@ export const CONNECTORS: Record<
 > = {
   sim: (opts) =>
     new SimConnector(((opts ?? {}) as SimOptions) ?? {}),
-  mt5: () => {
-    throw new Error(
-      'mt5 connector is not yet wired — see src/PHASE_B_TODO.ts. ' +
-        'Set SLOT_CONNECTOR=sim for now.',
-    );
+  mt5: (opts) => {
+    const o = (opts ?? {}) as Mt5ConnectorOpts;
+    if (!o.db || !o.ledger) {
+      throw new Error(
+        'mt5 connector requires { db, ledger } in factory opts',
+      );
+    }
+    return new Mt5Connector(o);
   },
 };
 
-export function makeConnector(id: string, opts?: unknown): BrokerConnector {
+/** Convenience opts shape passed by app.ts to makeConnector. */
+export type ConnectorFactoryOpts = {
+  db?: DB;
+  ledger?: Ledger;
+};
+
+export function makeConnector(
+  id: string,
+  opts?: ConnectorFactoryOpts,
+): BrokerConnector {
   const factory = CONNECTORS[id];
   if (!factory) {
     throw new Error(
@@ -33,4 +50,4 @@ export function makeConnector(id: string, opts?: unknown): BrokerConnector {
   return factory(opts);
 }
 
-export type { SimConnector, SimOptions };
+export type { SimConnector, SimOptions, Mt5Connector, Mt5ConnectorOpts };
