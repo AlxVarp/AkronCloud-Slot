@@ -8,9 +8,13 @@ FROM ${NODE_IMAGE} AS build
 
 WORKDIR /app
 
-# Build-time tools for `better-sqlite3` native compilation.
+# Build-time tools for `better-sqlite3` native compilation + for
+# compiling the MQL5 service (xvfb + X libs so metaeditor64 can
+# open its dummy UI in a fake X server during the build step).
 RUN apt-get update \
- && apt-get install -y --no-install-recommends python3 make g++ ca-certificates \
+ && apt-get install -y --no-install-recommends \
+      python3 make g++ ca-certificates xvfb libxinerama1 libxcursor1 \
+      libxrandr2 libxi6 libxext6 libxrender1 libfontconfig1 \
  && rm -rf /var/lib/apt/lists/*
 
 # Install ALL dependencies (dev + prod) so better-sqlite3 compiles
@@ -90,17 +94,33 @@ RUN chmod +x /config/.config/openbox/autostart \
  && chown -R abc:abc /config/.wine
 
 # SlotService MQL5 source ships in the image, dropped in the
-# MQL5/Services dir. We don't try to compile it at build time
-# because metaeditor64 inside `docker build` (no XDG_RUNTIME_DIR,
-# no DISPLAY) fails. Instead, the entrypoint helper below tries to
-# compile it at first container start (with XDG_RUNTIME_DIR set,
-# via the existing /run/s6/services/<...>/run mechanism). If the
-# compile fails, the slot still runs - the user just doesn't have
-# the auto-attach until they manually do it.
-COPY mql5/ /tmp/mql5/
-RUN mkdir -p /config/.wine/drive_c/users/abc/MetaTrader\ 5/MQL5/Services \
+# MQL5/Services dir. Compile it to .ex5 in this same stage using
+# metaeditor64 (which the runtime image already has from the base
+# akron-mt5-base) under an Xvfb so metaeditor can open its dummy
+# UI. This is the same trick the parent akron-mt5-base uses to bake
+# PublisherZMQEvents.ex5 into the base image.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends xvfb \
+ && rm -rf /var/lib/apt/lists/* \
+ && mkdir -p /config/.wine/drive_c/users/abc/MetaTrader\ 5/MQL5/Services \
  && cp /tmp/mql5/SlotService.mq5 /config/.wine/drive_c/users/abc/MetaTrader\ 5/MQL5/Services/SlotService.mq5 \
- && rm -rf /tmp/mql5 && chown -R abc:abc /config/.wine
+ && rm -rf /tmp/mql5 \
+ && mkdir -p /tmp/xvfb-runtime && cd /tmp/xvfb-runtime \
+ && Xvfb :99 -screen 0 1024x768x24 -ac +extension RANDR +extension RENDER >/dev/null 2>&1 & \
+   XVFB_PID=$! \
+ && sleep 2 \
+ && export DISPLAY=:99 XDG_RUNTIME_DIR=/tmp/xvfb-runtime \
+ && cd /config/.wine/drive_c/users/abc/MetaTrader\ 5/MQL5/Services \
+ && WINEDEBUG=-all /opt/wine-stable/bin/wine \
+       "Z:\\users\\abc\\MetaTrader 5\\metaeditor64.exe" \
+       /compile:"Z:\\users\\abc\\MetaTrader 5\\MQL5\\Services\\SlotService.mq5" \
+       /log:"Z:\\users\\abc\\MetaTrader 5\\MQL5\\Services\\SlotService-compile.log" \
+       /dir:"Z:\\users\\abc\\MetaTrader 5\\MQL5\\Services" 2>&1 | tail -30 ; \
+   echo "--- compile log ---" ; \
+   cat SlotService-compile.log 2>/dev/null | tail -20 ; \
+   kill $XVFB_PID 2>/dev/null ; \
+   ls -la /config/.wine/drive_c/users/abc/MetaTrader\ 5/MQL5/Services/ ; \
+   chown -R abc:abc /config/.wine
 
 # Register the service in the user's default profile so MT5 auto-runs
 # it on every terminal boot. The service runs BEFORE any chart is
