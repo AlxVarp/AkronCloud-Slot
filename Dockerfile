@@ -89,6 +89,43 @@ RUN chmod +x /config/.config/openbox/autostart \
  && chown abc:abc /config/.config/openbox/autostart \
  && chown -R abc:abc /config/.wine
 
+# Compile the SlotService MQL5 service that auto-attaches the
+# PublisherZMQEvents EA at MT5 startup, and register it as a service
+# so MT5 auto-loads it on every terminal boot. This is the auto-attach
+# path for the broker publisher - no user drag-drop required.
+#
+# Wine + MetaEditor + the MQL5 files we need are already in
+# /config/.wine from the base image. We compile SlotService.mq5
+# using `wine metaeditor64.exe /compile:...` from inside the
+# runtime image, drop the .ex5 in MQL5/Services, and write a
+# services.ini that lists SlotService as a startup service.
+#
+# PublisherZMQEvents.ex5 ships pre-installed at
+# /config/.wine/drive_c/users/abc/MetaTrader 5/MQL5/Experts/
+# (from the base image); we don't need to compile or install it.
+COPY mql5/ /tmp/mql5/
+RUN mkdir -p /tmp/mql5-workdir && \
+    cp /tmp/mql5/SlotService.mq5 /config/.wine/drive_c/users/abc/MetaTrader\ 5/MQL5/Services/SlotService.mq5 && \
+    WINEDEBUG=-all /opt/wine-stable/bin/wine \
+      "Z:\\users\\abc\\MetaTrader 5\\metaeditor64.exe" \
+      /compile:"Z:\\users\\abc\\MetaTrader 5\\MQL5\\Services\\SlotService.mq5" \
+      /include:"Z:\\users\\abc\\MetaTrader 5\\MQL5\\Include" \
+      /log:"Z:\\users\\abc\\MetaTrader 5\\MQL5\\Services\\SlotService-compile.log" \
+    /dir:"Z:\\users\\abc\\MetaTrader 5\\MQL5\\Services" 2>&1 | tail -20 ; \
+    ls -la "/config/.wine/drive_c/users/abc/MetaTrader 5/MQL5/Services/" ; \
+    echo "--- SlotService-compile.log ---" ; \
+    cat "/config/.wine/drive_c/users/abc/MetaTrader 5/MQL5/Services/SlotService-compile.log" 2>/dev/null | tail -10 ; \
+    rm -f /tmp/mql5/SlotService.mq5
+
+# Register the service in the user's default profile so MT5 auto-runs
+# it on every terminal boot. The service runs BEFORE any chart is
+# loaded, finds the saved chart (or opens one), and ChartIndicatorAdd's
+# the publisher EA onto it.
+RUN mkdir -p /config/.wine/drive_c/users/abc/MetaTrader\ 5/profiles/default \
+ && printf '%s\n' '[Services]' 'SlotService=SlotService.ex5' \
+    > /config/.wine/drive_c/users/abc/MetaTrader\ 5/profiles/default/services.ini \
+ && chown -R abc:abc /config/.wine
+
 EXPOSE 7777
 HEALTHCHECK --interval=30s --timeout=3s --start-period=30s --retries=3 \
   CMD /opt/node20/bin/node -e "fetch('http://127.0.0.1:7777/v1/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
