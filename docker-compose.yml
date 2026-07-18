@@ -15,7 +15,7 @@ services:
     env_file:
       - .env
     ports:
-      - "127.0.0.1:7777:7777"   # Phase B: loopback-only. Phase C will bind to the NetBird mesh iface.
+      - "0.0.0.0:7777:7777"   # Temp dev exposure: reachable at http://<host>:7777. Move back to 127.0.0.1 + NetBird for prod (Phase C).
     volumes:
       - slot-state:/var/lib/akron-slot
     healthcheck:
