@@ -78,6 +78,59 @@ RUN mkdir -p /etc/s6-overlay/s6-rc.d/svc-slot && \
     # Empty marker file = "include this service in the s6 user bundle".
     touch /etc/s6-overlay/s6-rc.d/user/contents.d/svc-slot
 
+# akroncloud-slot: override the base image's svc-de and svc-kasmvnc run
+# scripts. The akron-mt5-base image does not set DISPLAY, HOME or
+# XDG_RUNTIME_DIR in the s6-rc container env, so openbox-session
+# (in svc-de) and Xvnc (in svc-kasmvnc) fail silently when s6 runs
+# them. We hardcode the env vars here. The s6-rc service definition
+# is recompiled at boot by the base image's init-kasmvnc-config, so
+# overwriting the run files in /etc/s6-overlay/s6-rc.d is sufficient
+# to make the fix survive image rebuild + container restart.
+RUN cat > /etc/s6-overlay/s6-rc.d/svc-de/run <<'EOSVCDE'
+#!/bin/bash
+# akroncloud-slot fix: openbox-session needs DISPLAY + HOME explicit.
+# akron-mt5-base does not set them globally in s6 env.
+export DISPLAY=:0
+export HOME=/config
+export XDG_RUNTIME_DIR=/config/.XDG
+exec s6-setuidgid abc /bin/bash /defaults/startwm.sh
+EOSVCDE
+RUN chmod +x /etc/s6-overlay/s6-rc.d/svc-de/run
+
+# akron-mt5-base's svc-kasmvnc uses $DISPLAY in its run script but the
+# var is empty in s6 env (same root cause as svc-de). We rewrite the
+# run script so DISPLAY=:0 is exported before Xvnc is exec'd.
+RUN cat > /etc/s6-overlay/s6-rc.d/svc-kasmvnc/run <<'EOSVCKASM'
+#!/usr/bin/with-contenv bash
+export DISPLAY=:0
+export HOME=/config
+export XDG_RUNTIME_DIR=/config/.XDG
+# Pass gpu flags if mounted (lifted verbatim from the base image).
+if ls /dev/dri/renderD* 1> /dev/null 2>&1 && [ -z ${DISABLE_DRI+x} ] && ! which nvidia-smi; then
+  HW3D="-hw3d"
+fi
+if [ -z ${DRINODE+x} ]; then
+  DRINODE="/dev/dri/renderD128"
+fi
+exec s6-setuidgid abc \
+  /usr/local/bin/Xvnc ${DISPLAY} \
+    ${HW3D} \
+    -PublicIP 127.0.0.1 \
+    -drinode ${DRINODE} \
+    -disableBasicAuth \
+    -SecurityTypes None \
+    -AlwaysShared \
+    -http-header Cross-Origin-Embedder-Policy=require-corp \
+    -http-header Cross-Origin-Opener-Policy=same-origin \
+    -geometry 1024x768 \
+    -sslOnly 0 \
+    -RectThreads 0 \
+    -websocketPort 6901 \
+    -interface 0.0.0.0 \
+    -Log *:stdout:10
+EOSVCKASM
+RUN chmod +x /etc/s6-overlay/s6-rc.d/svc-kasmvnc/run
+
 # Replace the base image's autostart with a minimal launcher for
 # MetaTrader 5. The base image's /Metatrader/start.sh spins up the
 # mt5copy bridge + Python embed + wine-mono, which we don't need for
