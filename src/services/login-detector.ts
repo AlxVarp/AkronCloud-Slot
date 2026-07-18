@@ -147,9 +147,9 @@ export function startLoginDetector(opts: StartLoginDetectorOpts): () => void {
       try {
         // Cascade-kill the VNC chain. The base image's s6 setup
         // doesn't actually wire svc-kclient / svc-kasmvnc / svc-nginx
-        // as deps of svc-de, so killing -de leaves the others up.
-        // Send -d to each individually; the supervises handle the
-        // rest (s6-svc -d is idempotent).
+        // as deps of svc-de, and s6's `restart: always` policy
+        // re-spawns services after `s6-svc -d`. Use `-K` (uppercase,
+        // SIGKILL + want down) so the service stays dead.
         for (const svc of [
           'svc-de',
           'svc-kclient',
@@ -157,7 +157,7 @@ export function startLoginDetector(opts: StartLoginDetectorOpts): () => void {
           'svc-nginx',
         ]) {
           try {
-            spawn('s6-svc', ['-d', `/run/service/${svc}`], {
+            spawn('s6-svc', ['-K', `/run/service/${svc}`], {
               stdio: 'ignore',
               detached: true,
             }).unref();
