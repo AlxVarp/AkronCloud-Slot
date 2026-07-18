@@ -60,7 +60,7 @@ async function isLoggedIn(): Promise<boolean> {
         return false;
       }
       // Post-login: any of these patterns
-      if (/^MetaTrader 5 -/.test(title)) return true; // "<broker> - <style> - <chart>" main window
+      if (/^MetaTrader 5/.test(title)) return true; // "MetaTrader 5", "MetaTrader 5 - ...", "MetaTrader 5 - Login" excluded above
       if (title.includes(':')) return true; // "Broker: Account - ..."
       if (/^Account:\s/i.test(title)) return true; // "Account: <login>"
     }

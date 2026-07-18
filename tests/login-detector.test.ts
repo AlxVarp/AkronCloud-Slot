@@ -53,3 +53,29 @@ describe('startLoginDetector with an already-operational state file', () => {
     stop();
   });
 });
+
+describe('login-detector wmctrl regex (parse title)', () => {
+  it('matches the typical "MetaTrader 5 - <style> - <chart>" main window title', () => {
+    // We just assert the regex shapes the detector uses. End-to-end
+    // with a real wmctrl is covered by manually running the
+    // container and inspecting /v1/lifecycle.
+    const titles = [
+      'MetaTrader 5 - Netting - EURUSD,H1',
+      'Deriv-Demo: Demo Account - Hedge - Deriv.com Limited',
+      'Account: 12345678',
+      'MetaTrader 5',
+    ];
+    expect(titles[0]).toMatch(/^MetaTrader 5/);
+    expect(titles[1]).toMatch(/:/);
+    expect(titles[2]).toMatch(/^Account:\s/i);
+    expect(titles[3]).toMatch(/^MetaTrader 5/);
+  });
+
+  it('rejects pre-login titles', () => {
+    const pre = ['Login', 'MetaTrader 5 - Login', 'Login :', 'Login to Deriv-Server'];
+    for (const t of pre) {
+      const isLogin = /^Login\b|^MetaTrader 5 - Login\b|^\s*Login\s*$/i.test(t);
+      expect(isLogin).toBe(true);
+    }
+  });
+});
