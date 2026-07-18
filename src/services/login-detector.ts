@@ -42,6 +42,7 @@ async function isLoggedIn(): Promise<boolean> {
   try {
     const { stdout } = await execFileP('wmctrl', ['-lx'], {
       timeout: 2000,
+      env: { ...process.env, DISPLAY: ':0' },
     });
     const lines = stdout.split('\n').filter((l) => l.trim());
     let mt5Windows = 0;
