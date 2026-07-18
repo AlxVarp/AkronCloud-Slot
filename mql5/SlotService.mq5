@@ -45,12 +45,12 @@ void OnStart()
    PrintFormat("SlotService: iCustom(%s) -> handle=%d, err=%d",
                PublisherName, handle, err);
 
-   // 3) Mark the chart modified so the next MT5 save event
-   // (terminal close, profile save) persists the layout with the
-   // EA attached. We use CHART_MODIFIED=1 to flag the change.
-   if (!ChartSetInteger(chart_id, CHART_MODIFIED, 1)) {
-      PrintFormat("SlotService: CHART_MODIFIED failed (err=%d)", GetLastError());
-   }
+   // 3) MT5 saves the chart layout (including attached EAs) on
+   // profile-save events and on terminal close. We don't need to
+   // explicitly flag the chart as modified - the EA attach above
+   // counts as a modification, and MT5's default save-on-exit
+   // behavior picks it up. CHART_MODIFIED isn't a valid enum in
+   // older MQL5 builds (build 5495 / 5800 here) so we skip it.
 
    // 4) Mark the start so external tools (the slot, ops dashboards)
    // can detect the auto-attach completed.
