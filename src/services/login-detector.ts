@@ -18,7 +18,7 @@
  *   3. Tell the slot's REST/WS layer via `onTransition` so /v1/state
  *      starts reporting operational.
  */
-import { execFile, spawn } from 'node:child_process';
+import { execFile, execFileSync, spawn } from 'node:child_process';
 import { writeFileSync, existsSync, readFileSync } from 'node:fs';
 import { promisify } from 'node:util';
 import { log } from '../log.js';
