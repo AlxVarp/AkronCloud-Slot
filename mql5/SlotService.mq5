@@ -4,17 +4,18 @@
 //
 // Runs at MT5 terminal startup. Finds the open chart (or opens
 // EURUSD,H1 if none), then attaches PublisherZMQEvents to it via
-// iCustom + ChartIndicatorAdd. Saves the chart so the layout
-// auto-loads on every subsequent boot.
+// iCustom. Marks the chart modified so MT5 saves it with the EA
+// on close.
 //
 // API notes:
-// - "symbol" already a string; no SymbolToString wrapper needed.
-// - MQL5 regex via StringMatch (StringFind) - no // literals.
-// - Attach via handle, not name: iCustom returns a handle from
-//   the EA name, then ChartIndicatorAdd takes that handle.
+// - "symbol" already a string; pass NULL for "use the chart's".
+// - ChartIndicatorAdd takes a handle, not a name; iCustom returns it.
+// - ChartSave is NOT a function in MQL5; we use
+//   ChartSetInteger(..., CHART_MODIFIED, 1) instead, which marks
+//   the chart as modified for the next save event.
 #property service
 #property copyright "akroncloud-slot"
-#property version   "1.00"
+#property version   "1.20"
 
 input string DefaultSymbol = "EURUSD";
 input string PublisherName = "PublisherZMQEvents";
@@ -35,34 +36,23 @@ void OnStart()
    }
    PrintFormat("SlotService: chart_id=%I64d", chart_id);
 
-   // 2) Get a handle to the PublisherZMQEvents EA via iCustom. The
-   // last 4 zero args are the 4 numeric input slots exposed by
-   // PublisherZMQEvents (1 string + 3 ints? actually 0 numeric; the
-   // 4-arg form is the standard "4 numeric input slots" fallback
-   // used by iCustom's prototype). The EA's string inputs
-   // (PublishEndpoint etc.) are read from a config file in the
-   // base image, not from MQL5 inputs, so passing them through
-   // iCustom isn't necessary.
-   int handle = iCustom(chart_id, 0, PublisherName, 0, 0, 0, 0, 0);
-   if (handle == INVALID_HANDLE) {
-      PrintFormat("SlotService: iCustom failed for %s on chart %I64d (err=%d)",
-                  PublisherName, chart_id, GetLastError());
-      return;
+   // 2) Get a handle to the EA via iCustom(NULL, 0, "Name", ...).
+   // iCustom for an EA returns INVALID_HANDLE in modern MT5 (the
+   // handle is meaningful for indicators only), but the side-effect
+   // is the EA gets loaded onto the chart, which is what we want.
+   int handle = iCustom(NULL, 0, PublisherName);
+   int err = GetLastError();
+   PrintFormat("SlotService: iCustom(%s) -> handle=%d, err=%d",
+               PublisherName, handle, err);
+
+   // 3) Mark the chart modified so the next MT5 save event
+   // (terminal close, profile save) persists the layout with the
+   // EA attached. We use CHART_MODIFIED=1 to flag the change.
+   if (!ChartSetInteger(chart_id, CHART_MODIFIED, 1)) {
+      PrintFormat("SlotService: CHART_MODIFIED failed (err=%d)", GetLastError());
    }
 
-   // 3) ChartIndicatorAdd is for indicators (with a non-zero
-   // handle). For an EA (handle is INVALID_HANDLE because EAs are
-   // loaded differently), iCustom() already attached it to the
-   // chart - no further action needed. Just persist the layout.
-   PrintFormat("SlotService: attached %s (handle=%d) to chart %I64d",
-               PublisherName, handle, chart_id);
-
-   // 4) Save the chart so MT5 reloads it with the EA on next boot.
-   if (!ChartSave(chart_id)) {
-      PrintFormat("SlotService: ChartSave failed (err=%d)", GetLastError());
-   }
-
-   // 5) Mark the start so external tools (the slot, ops dashboards)
+   // 4) Mark the start so external tools (the slot, ops dashboards)
    // can detect the auto-attach completed.
    WriteStartupMarker();
 }
