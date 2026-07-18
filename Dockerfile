@@ -147,6 +147,7 @@ else
 fi
 COMPILE
 RUN printf 'oneshot\n' > /etc/s6-overlay/s6-rc.d/svc-mt5-compile/type
+RUN touch /etc/s6-overlay/s6-rc.d/svc-mt5-compile/up
 RUN chmod +x /etc/s6-overlay/s6-rc.d/svc-mt5-compile/run \
  && touch /etc/s6-overlay/s6-rc.d/user/contents.d/svc-mt5-compile
 
