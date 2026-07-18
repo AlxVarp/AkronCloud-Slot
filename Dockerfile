@@ -74,6 +74,21 @@ RUN mkdir -p /etc/s6-overlay/s6-rc.d/svc-slot && \
     # Empty marker file = "include this service in the s6 user bundle".
     touch /etc/s6-overlay/s6-rc.d/user/contents.d/svc-slot
 
+# Replace the base image's autostart with a minimal launcher for
+# MetaTrader 5. The base image's /Metatrader/start.sh spins up the
+# mt5copy bridge + Python embed + wine-mono, which we don't need for
+# the broker-login demo. Direct wine + terminal64.exe boots MT5 in ~10 s.
+RUN cat > /config/.config/openbox/autostart <<'AUTOSTART'
+#!/bin/sh
+export DISPLAY=:0
+export WINEPREFIX=/config/.wine
+export WINEDEBUG=-all
+exec /opt/wine-stable/bin/wine "/config/.wine/drive_c/users/abc/MetaTrader 5/terminal64.exe" /portable /skipupdate
+AUTOSTART
+RUN chmod +x /config/.config/openbox/autostart \
+ && chown abc:abc /config/.config/openbox/autostart \
+ && chown -R abc:abc /config/.wine
+
 EXPOSE 7777
 HEALTHCHECK --interval=30s --timeout=3s --start-period=30s --retries=3 \
   CMD /opt/node20/bin/node -e "fetch('http://127.0.0.1:7777/v1/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
