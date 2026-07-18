@@ -145,18 +145,30 @@ export function startLoginDetector(opts: StartLoginDetectorOpts): () => void {
         'MT5 login detected — transitioning slot to operational',
       );
       try {
-        // Cascade-kill the VNC chain. svc-de's deps include
-        // svc-kclient + svc-kasmvnc + svc-nginx, so killing -de
-        // takes down the VNC + nginx-front automatically.
-        const s6svc = spawn('s6-svc', ['-d', '/run/service/svc-de'], {
-          stdio: 'ignore',
-          detached: true,
-        });
-        s6svc.unref();
+        // Cascade-kill the VNC chain. The base image's s6 setup
+        // doesn't actually wire svc-kclient / svc-kasmvnc / svc-nginx
+        // as deps of svc-de, so killing -de leaves the others up.
+        // Send -d to each individually; the supervises handle the
+        // rest (s6-svc -d is idempotent).
+        for (const svc of [
+          'svc-de',
+          'svc-kclient',
+          'svc-kasmvnc',
+          'svc-nginx',
+        ]) {
+          try {
+            spawn('s6-svc', ['-d', `/run/service/${svc}`], {
+              stdio: 'ignore',
+              detached: true,
+            }).unref();
+          } catch {
+            /* ignore individual failures */
+          }
+        }
       } catch (e) {
         log.warn(
           { err: (e as Error).message },
-          's6-svc -d svc-de failed (slot will still mark operational)',
+          'cascade-kill VNC services failed (slot will still mark operational)',
         );
       }
       try {
