@@ -99,10 +99,43 @@ export async function buildApp(cfg: AppConfig): Promise<FastifyInstance> {
   await app.register(restRoutes);
   await app.register(wsRoutes);
 
+  // Login detector: watches MT5's window via xdotool, transitions
+  // the slot to 'operational' on broker login, kills the VNC chain.
+  // Only runs in the combined container image (where xdotool/Xvnc
+  // exist). In dev (no MT5) it's a no-op.
+  const { startLoginDetector, readSlotState } = await import(
+    './services/login-detector.js'
+  );
+  const { startMt5Zmq } = await import('./services/mt5-zmq.js');
+
+  startLoginDetector({
+    onTransition: async () => {
+      log.info({ evt: 'login_detected' }, 'slot transitioned to operational');
+    },
+  });
+
+  // Real MT5 ZMQ subscriber. Persists fills + order state changes
+  // from PublisherZMQEvents.ex5 into the ledger. Only useful in the
+  // combined image; in dev (no ZMQ server) the connect retries silently.
+  startMt5Zmq({
+    ledger: deps.ledger,
+    resolveAccount: (brokerLogin) =>
+      deps.db
+        .prepare(
+          `SELECT * FROM accounts WHERE broker_login = ? AND status != 'disabled' LIMIT 1`,
+        )
+        .get(brokerLogin) as AccountRow | undefined,
+  });
+
   // Start the per-account connector stream. Persists fills into the
   // ledger so /v1/fills and /v1/positions see broker activity
   // whether or not a WS client is currently subscribed.
   startConnectorStream(deps);
+
+  // Expose the slot lifecycle state for the /v1/state endpoint.
+  // We decorate a getter so the value is re-read on every /v1/state
+  // request (the state file is updated by the login detector).
+  app.decorate('slot_state', () => readSlotState());
 
   return app;
 }

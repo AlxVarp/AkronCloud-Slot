@@ -92,13 +92,16 @@ function connectPage(opts: { bootstrapToken: string; tenantHint: string }): stri
     .ok { color: #137333; font-weight: 600; }
     .err { color: #b3261e; font-weight: 600; }
     .hint { font-size: 12px; color: #777; }
+    .pane#done { padding: 20px; background: #13733311; }
+    .pane#done h2 { background: transparent; border: 0; color: #137333; }
+    pre.examples { background: #0d1117; color: #c9d1d9; padding: 12px; border-radius: 6px; white-space: pre-wrap; }
   </style>
 </head>
 <body>
   <h1>akroncloud-slot · broker onboarding</h1>
-  <p class="lede">tenant <code>${tenantHint}</code> · slot runs MetaTrader&nbsp;5 inside this container. Open the desktop on the left, log into your broker, then submit the same credentials below so the slot can encrypt them and the API can take over.</p>
+  <p class="lede">tenant <code>${tenantHint}</code> · slot runs MetaTrader&nbsp;5 inside this container. Open the desktop on the left, log into your broker. The slot's login detector will flip this page to operational automatically and close the VNC.</p>
 
-  <div class="row">
+  <div class="row" id="pending_row">
     <div class="pane">
       <h2>VNC (MetaTrader 5 desktop)</h2>
       <iframe src="http://localhost:3000" sandbox="allow-same-origin allow-scripts"></iframe>
@@ -117,9 +120,34 @@ function connectPage(opts: { bootstrapToken: string; tenantHint: string }): stri
           <input name="password" required type="password" autocomplete="off">
         </label>
         <button type="submit" id="go">Submit &amp; take over</button>
-        <p class="hint">Submitting flips the slot from <code>pending_login</code> to <code>operational</code>. The slot encrypts the password (AES-256-GCM, per-tenant derived key), stores it in SQLite, then keeps the broker session open via the in-process connector. From here on, <code>POST /v1/orders</code>, <code>GET /v1/positions</code>, <code>WS /v1/stream</code> etc. all come online.</p>
+        <p class="hint">Backup path. Normally the slot auto-detects the broker login via X11 window watcher and kills the VNC chain on its own. The form is here for users who skip the VNC step (e.g. running the slot in a CI-like context).</p>
       </form>
       <pre id="out" class="out" hidden></pre>
+    </div>
+  </div>
+
+  <div id="done" style="display:none">
+    <div class="pane" id="done">
+      <h2>Operational</h2>
+      <p>Slot is live. VNC has been closed. The MT5 session inside the container is now the source of truth for trades; the slot is bridging fills + order state into the local ledger via ZMQ. Use the REST API below.</p>
+      <p class="hint">VNC is gone. Reopen this page anytime to see the curl examples below.</p>
+      <pre class="examples"># mint a token (token expires in 1h)
+TOKEN=$(curl -s http://localhost:7777/v1/health &gt;/dev/null; curl -s http://localhost:7777/connect | grep -oE 'eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+' | head -1)
+
+# list accounts (if you submitted via the form above)
+curl -H "Authorization: Bearer $TOKEN" http://localhost:7777/v1/accounts/&lt;id&gt;
+
+# place a market order
+curl -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"account_id":"&lt;id&gt;","instrument":"EURUSD","side":"buy","qty":0.1,"type":"market"}' \
+  http://localhost:7777/v1/orders
+
+# list positions
+curl -H "Authorization: Bearer $TOKEN" "http://localhost:7777/v1/positions?account_id=&lt;id&gt;"
+
+# stream fills/quotes via WebSocket
+wscat -c "ws://localhost:7777/v1/stream?account_id=&lt;id&gt;" -H "Authorization: Bearer $TOKEN"
+</pre>
     </div>
   </div>
 
@@ -160,6 +188,28 @@ function connectPage(opts: { bootstrapToken: string; tenantHint: string }): stri
       btn.disabled = false; btn.textContent = 'Retry';
     }
   });
+
+  // Poll /v1/lifecycle. When the slot transitions to 'operational',
+  // hide the VNC pane and show the operational pane.
+  let lastState = null;
+  async function poll() {
+    try {
+      const r = await fetch('/v1/lifecycle');
+      if (!r.ok) return;
+      const j = await r.json();
+      if (j.state === 'operational' && lastState !== 'operational') {
+        document.getElementById('pending_row').style.display = 'none';
+        document.getElementById('done').style.display = 'block';
+        document.title = 'akroncloud-slot — operational';
+      } else if (j.state === 'pending_login' && lastState !== 'pending_login') {
+        document.getElementById('pending_row').style.display = 'grid';
+        document.getElementById('done').style.display = 'none';
+      }
+      lastState = j.state;
+    } catch {}
+  }
+  poll();
+  setInterval(poll, 2000);
   </script>
 </body>
 </html>`;
@@ -199,9 +249,16 @@ export async function restRoutes(app: FastifyInstance) {
     );
   });
 
-  // All /v1/* (except /v1/health and /connect) require authentication.
+  // All /v1/* (except /v1/health, /v1/lifecycle, /connect) require auth.
   app.addHook('onRequest', async (req, _reply) => {
-    if (req.url === '/v1/health' || req.url === '/connect' || req.url?.startsWith('/connect?')) return;
+    if (
+      req.url === '/v1/health' ||
+      req.url === '/v1/lifecycle' ||
+      req.url === '/connect' ||
+      req.url?.startsWith('/connect?')
+    ) {
+      return;
+    }
 
     const token = deps.auth.extractBearer(
       req.headers.authorization as string | undefined,
@@ -452,6 +509,20 @@ export async function restRoutes(app: FastifyInstance) {
     return {
       account_id: q.account_id,
       positions: deps.ledger.positionsFor(q.account_id),
+    };
+  });
+
+  // GET /v1/lifecycle — slot lifecycle state (no auth, no params).
+  // Reports whether the slot is in pending_login (VNC up) or
+  // operational (VNC killed, full API surface). The login detector
+  // updates the underlying state file in the background.
+  app.get('/v1/lifecycle', async () => {
+    const fn = (app as unknown as { slot_state: () => string }).slot_state;
+    return {
+      state: fn(),
+      slot_id: deps.cfg.slotId,
+      tenant_id: deps.cfg.tenantId,
+      ts: Date.now(),
     };
   });
 
