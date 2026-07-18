@@ -52,7 +52,7 @@ async function isLoggedIn(): Promise<boolean> {
       if (!m) continue;
       const wmClass = m[1] ?? '';
       const title = (m[2] ?? '').trim();
-      if (!/^terminal64\.exe$/i.test(wmClass)) continue;
+      if (!/^terminal64\.exe(\.|$)/i.test(wmClass)) continue;
       mt5Windows++;
       if (!title) continue;
       // Pre-login: "Login" or "MetaTrader 5 - Login"
