@@ -54,16 +54,19 @@ async function isLoggedIn(): Promise<boolean> {
       const title = (m[2] ?? '').trim();
       if (!/^terminal64\.exe$/i.test(wmClass)) continue;
       mt5Windows++;
-      // Pre-login: title is "Login" or "MetaTrader 5 - Login".
-      // Post-login: title has the broker + account + style + company.
       if (!title) continue;
-      if (/^Login$/i.test(title)) return false;
-      if (/Login to |Login :|MetaTrader 5 - Login\b/i.test(title)) return false;
-      if (title.includes(':')) return true; // broker:account pattern
+      // Pre-login: "Login" or "MetaTrader 5 - Login"
+      if (/^Login\b|^MetaTrader 5 - Login\b|^\s*Login\s*$/i.test(title)) {
+        return false;
+      }
+      // Post-login: any of these patterns
+      if (/^MetaTrader 5 -/.test(title)) return true; // "<broker> - <style> - <chart>" main window
+      if (title.includes(':')) return true; // "Broker: Account - ..."
+      if (/^Account:\s/i.test(title)) return true; // "Account: <login>"
     }
-    // Fallback: if there are 3+ MT5 windows (chart, market watch,
-    // toolbox) and none is the login dialog, treat as logged in.
-    return mt5Windows >= 3;
+    // Fallback: 2+ MT5 windows and none looks like a login dialog
+    if (mt5Windows >= 2) return true;
+    return false;
   } catch (e) {
     log.debug({ err: (e as Error).message }, 'isLoggedIn probe failed');
     return false;
