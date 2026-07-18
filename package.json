@@ -1,6 +1,6 @@
 {
   "name": "@akroncloud/slot-service",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Pure REST + WebSocket trading service for AkronCloud. Runs on every tenant VPS. Connects to a broker (Deriv MVP), maintains an internal ledger, exposes a unified trading interface to the cerebro.",
   "type": "module",
   "main": "dist/server.js",
