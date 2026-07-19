@@ -165,6 +165,28 @@ RUN chmod +x /config/.config/openbox/autostart \
  && chown abc:abc /config/.config/openbox/autostart \
  && chown -R abc:abc /config/.wine
 
+# akroncloud-slot — bridge runtime fixes. The base image ships MT5 in
+# `/config/.wine/drive_c/Program Files/MetaTrader 5/`. The bridge's
+# runtime looks for the terminal at the user-space path
+# `/config/.wine/drive_c/users/abc/MetaTrader 5/` (set by
+# MT5COPY_MT5_PATH_USER). start.sh normally populates that path on
+# first boot by downloading mt5setup.exe, but if the download fails
+# or was skipped, the directory is missing and the bridge gives up
+# with `terminal-process-missing`. We symlink the user-space binary
+# to the preinstalled program-files one so the bridge finds a valid
+# terminal path, and we write the active-terminal-path.txt so the
+# bridge reads the file (instead of relying on its `ps` filter which
+# only sees its own command line).
+RUN mkdir -p "/config/.wine/drive_c/users/abc/MetaTrader 5" \
+ && ln -sfn "/config/.wine/drive_c/Program Files/MetaTrader 5/terminal64.exe" \
+          "/config/.wine/drive_c/users/abc/MetaTrader 5/terminal64.exe" \
+ && ln -sfn "/config/.wine/drive_c/Program Files/MetaTrader 5/MQL5" \
+          "/config/.wine/drive_c/users/abc/MetaTrader 5/MQL5" \
+ && mkdir -p "/config/.wine/drive_c/Program Files/MetaTrader 5/MQL5/Files" \
+ && printf "%s" "/config/.wine/drive_c/Program Files/MetaTrader 5/terminal64.exe" \
+    > "/config/.wine/drive_c/Program Files/MetaTrader 5/MQL5/Files/active-terminal-path.txt" \
+ && chown -R abc:abc "/config/.wine/drive_c/users/abc"
+
 # akroncloud-slot — bridge-adapter: Python ZMQ↔HTTP bridge that
 # translates between the slot's existing ZMQ protocol (tcp://5556
 # inbound commands, tcp://5557 outbound events) and the
