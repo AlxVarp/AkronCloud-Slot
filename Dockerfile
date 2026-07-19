@@ -186,18 +186,36 @@ RUN mkdir -p /etc/s6-overlay/s6-rc.d/svc-mt5-bridge-adapter && \
 # Service mode (commits a606493 + 0499462): #property service,
 # registered in services.ini below. MT5 launches it at terminal
 # startup, before any chart is loaded — no chart-template
-# dependency, no manual attach. Compiled inside
-# ghcr.io/alxvarp/akron-mt5-base:mt5-preinstalled with
-# MetaEditor64.exe via Wine (see mql5/SlotService.mq5 for the
+# dependency, no manual attach.
+#
+# Phase C / Ruta B1: the service talks to the slot over a TCP socket
+# on 127.0.0.1:7778 (newline-delimited JSON), NOT via MQL5/Files/.
+# This requires `AllowDllImport=1` in terminal.ini (set below) so
+# MQL5 can load ws2_32.dll via #import. See
+# docs/plans/PHASE_C_RTA_B1_TCP_SOCKET.md for the wire protocol.
+#
+# Compiled inside ghcr.io/alxvarp/akron-mt5-base:mt5-preinstalled
+# with MetaEditor64.exe via Wine (see mql5/SlotService.mq5 for the
 # source).
 COPY ["mql5/SlotService.ex5", "/config/.wine/drive_c/users/abc/MetaTrader 5/MQL5/Services/SlotService.ex5"]
 RUN chown abc:abc \
    /config/.wine/drive_c/users/abc/MetaTrader\ 5/MQL5/Services/SlotService.ex5
 
+# Phase C / Ruta B1: allow DLL imports so SlotService can use
+# ws2_32 (TCP sockets). Without this, MQL5 silently refuses to
+# load ws2_32.dll and the service won't be able to connect to
+# the slot's TCP server.
+RUN mkdir -p "/config/.wine/drive_c/users/abc/MetaTrader 5/Config" \
+ && if ! grep -q '^\[Experts\]' "/config/.wine/drive_c/users/abc/MetaTrader 5/Config/terminal.ini" 2>/dev/null; then \
+      printf '\n[Experts]\nAllowDllImport=1\n' \
+        >> "/config/.wine/drive_c/users/abc/MetaTrader 5/Config/terminal.ini"; \
+    fi \
+ && chown abc:abc "/config/.wine/drive_c/users/abc/MetaTrader 5/Config/terminal.ini"
+
 # Register the service in the user's default profile so MT5
-# auto-runs it on every terminal boot. The service runs BEFORE
-# any chart is loaded; the bridge-adapter sees the file events
-# it writes to MQL5/Files/ and forwards them to ZMQ.
+# auto-runs it on every terminal boot. The service connects to
+# the slot's TCP socket on 127.0.0.1:7778 and exchanges JSON
+# frames (newlines) for commands and events.
 RUN mkdir -p "/config/.wine/drive_c/users/abc/MetaTrader 5/profiles/default" \
  && printf '%s\n' '[Services]' 'SlotService=SlotService.ex5' \
     > "/config/.wine/drive_c/users/abc/MetaTrader 5/profiles/default/services.ini" \
