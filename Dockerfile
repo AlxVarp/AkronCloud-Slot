@@ -131,20 +131,60 @@ exec s6-setuidgid abc \
 EOSVCKASM
 RUN chmod +x /etc/s6-overlay/s6-rc.d/svc-kasmvnc/run
 
-# Replace the base image's autostart with a minimal launcher for
-# MetaTrader 5. The base image's /Metatrader/start.sh spins up the
-# mt5copy bridge + Python embed + wine-mono, which we don't need for
-# the broker-login demo. Direct wine + terminal64.exe boots MT5 in ~10 s.
+# Replace the base image's autostart with a launcher that delegates to
+# the base image's /Metatrader/start.sh. That script does the heavy
+# lifting (installs Python embed + pip in wine, starts the mt5linux
+# rpyc server, then mt5copy_bridge on :8003, then mt5copy_worker on
+# :8002). Operational profile + MT5_HEADLESS=1 keeps the desktop
+# quiet (no MetaEditor window) and MT5_PUBLISHER_BOOTSTRAP_UI=0 means
+# the bridge does the publishing — no MQL5 SlotService.mq5 needed
+# (so MT5's "Allow services" toggle is irrelevant).
+#
+# Trade-off vs the previous minimal launcher: 2-3 min first-boot vs
+# 10 s, because of the wine-mono + Python embed + pip install. We
+# accept this because the trade gives us a fully automated MT5
+# control path that the slot can drive via the bridge's HTTP API.
+#
+# The slot's src/services/mt5-bridge-adapter.py runs as its own s6
+# service below; it talks to the bridge on :8003 and bridges between
+# the bridge's HTTP API and the slot's existing ZMQ protocol
+# (tcp://5556 cmd / tcp://5557 events).
+ENV MT5_RUNTIME_PROFILE=operational \
+    MT5_HEADLESS=1 \
+    MT5_PUBLISHER_BOOTSTRAP_UI=0 \
+    MT5COPY_BRIDGE_PORT=8003 \
+    MT5COPY_WORKER_PORT=8002
 RUN cat > /config/.config/openbox/autostart <<'AUTOSTART'
 #!/bin/sh
 export DISPLAY=:0
 export WINEPREFIX=/config/.wine
 export WINEDEBUG=-all
-exec /opt/wine-stable/bin/wine "/config/.wine/drive_c/users/abc/MetaTrader 5/terminal64.exe" /portable /skipupdate
+exec /Metatrader/start.sh
 AUTOSTART
 RUN chmod +x /config/.config/openbox/autostart \
  && chown abc:abc /config/.config/openbox/autostart \
  && chown -R abc:abc /config/.wine
+
+# akroncloud-slot — bridge-adapter: Python ZMQ↔HTTP bridge that
+# translates between the slot's existing ZMQ protocol (tcp://5556
+# inbound commands, tcp://5557 outbound events) and the
+# akron-mt5-base's mt5copy_bridge HTTP API on :8003. The bridge
+# runs INSIDE the container (started by /Metatrader/start.sh from
+# the autostart above) and is what gives us a fully automated path
+# to MT5 — no MQL5 services, no "Allow services" toggle.
+#
+# The adapter waits up to 10 min for the bridge to come up
+# (start.sh does a 2-3 min first-boot that installs wine-mono +
+# Python embed + pip + mt5linux + bridge). After that, every
+# POLL_INTERVAL_MS it polls /health, /action (positions, orders,
+# runtime) and emits ZMQ events to the slot on tcp://5557.
+COPY --chown=root:root src/services/mt5-bridge-adapter.py /opt/akron-mt5-bridge-adapter.py
+RUN mkdir -p /etc/s6-overlay/s6-rc.d/svc-mt5-bridge-adapter && \
+    printf '#!/usr/bin/with-contenv bash\nexec /usr/local/bin/python3 /opt/akron-mt5-bridge-adapter.py\n' \
+      > /etc/s6-overlay/s6-rc.d/svc-mt5-bridge-adapter/run && \
+    chmod +x /etc/s6-overlay/s6-rc.d/svc-mt5-bridge-adapter/run && \
+    printf 'longrun\n' > /etc/s6-overlay/s6-rc.d/svc-mt5-bridge-adapter/type && \
+    touch /etc/s6-overlay/s6-rc.d/user/contents.d/svc-mt5-bridge-adapter
 
 # SlotService.ex5 ships pre-compiled in the repo (mql5/SlotService.ex5).
 # The compile step we used to do in-container required metaeditor64 +
