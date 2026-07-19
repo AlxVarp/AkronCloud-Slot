@@ -1,0 +1,30 @@
+version: "3.8"
+
+# Phase B deployment. Same compose runs locally (Phase B validation
+# with SLOT_CONNECTOR=sim) and in production (SLOT_CONNECTOR=mt5 +
+# akron-mt5-base sidecar — Phase B-real).
+
+services:
+  slot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ghcr.io/alxvarp/akroncloud-slot:0.2.0-mt5-bridge-v7
+    container_name: akroncloud-slot
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "0.0.0.0:7777:7777"   # Slot API (REST + WS)
+      - "0.0.0.0:3000:3000"   # KasmVNC noVNC (broker login via browser; chart-indicator attach on first boot)
+    volumes:
+      - slot-state:/var/lib/akron-slot
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:7777/v1/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 3s
+      start_period: 180s   # 3 min for first-boot (start.sh installs wine-mono + Python + bridge)
+      retries: 10
+
+volumes:
+  slot-state:
