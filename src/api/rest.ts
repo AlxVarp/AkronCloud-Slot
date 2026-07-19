@@ -101,6 +101,14 @@ function connectPage(opts: { bootstrapToken: string; tenantHint: string }): stri
   <h1>akroncloud-slot · broker onboarding</h1>
   <p class="lede">tenant <code>${tenantHint}</code> · slot runs MetaTrader&nbsp;5 inside this container. Open the desktop on the left, log into your broker. The slot's login detector will flip this page to operational automatically and close the VNC.</p>
 
+  <div id="syncbar" style="margin: 0 0 20px; padding: 12px 16px; border: 1px solid #c9d1d9; border-radius: 8px; background: #f6f8fa; display: flex; gap: 12px; align-items: center;">
+    <strong style="font-size: 13px;">Sync</strong>
+    <span class="hint" style="flex: 1;">Click after broker login: re-runs the validator and re-publishes the login command to ZMQ. If the slot's <code>PublisherZMQEvents.ex5</code> is attached, fills + account_status flow within seconds.</span>
+    <button type="button" id="sync_btn" style="background:#137333;">Sync</button>
+    <button type="button" id="sync_state_btn" style="background:#6e7681;">Refresh state</button>
+  </div>
+  <pre id="sync_out" class="out" hidden></pre>
+
   <div class="row" id="pending_row">
     <div class="pane">
       <h2>VNC (MetaTrader 5 desktop)</h2>
@@ -210,6 +218,55 @@ wscat -c "ws://localhost:7777/v1/stream?account_id=&lt;id&gt;" -H "Authorization
   }
   poll();
   setInterval(poll, 2000);
+
+  // Sync button: POST /v1/sync to re-trigger the validator. The endpoint
+  // re-publishes the login command on the MT5 ZMQ outbound. If the
+  // PublisherZMQEvents.ex5 is attached to a chart, the slot starts
+  // receiving account_status + fills within seconds.
+  const syncBtn = document.getElementById('sync_btn');
+  const syncStateBtn = document.getElementById('sync_state_btn');
+  const syncOut = document.getElementById('sync_out');
+  function showSync(label, body, kind) {
+    syncOut.hidden = false;
+    syncOut.classList.remove('ok', 'err');
+    if (kind) syncOut.classList.add(kind);
+    syncOut.textContent = label + '\\n\\n' + JSON.stringify(body, null, 2);
+  }
+  syncBtn.addEventListener('click', async () => {
+    syncBtn.disabled = true; syncBtn.textContent = 'Syncing...';
+    showSync('POST /v1/sync ...', { status: 'pending' });
+    try {
+      const r = await fetch('/v1/sync', {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer ' + tok },
+      });
+      const j = await r.json().catch(() => ({}));
+      showSync('HTTP ' + r.status + ' — /v1/sync', j, r.ok ? 'ok' : 'err');
+    } catch (e) {
+      showSync('Network error: ' + e.message, {}, 'err');
+    } finally {
+      syncBtn.disabled = false; syncBtn.textContent = 'Sync';
+    }
+  });
+  syncStateBtn.addEventListener('click', async () => {
+    syncStateBtn.disabled = true; syncStateBtn.textContent = 'Loading...';
+    try {
+      const [v1health, v1accounts, v1state, v1positions, v1fills] = await Promise.all([
+        fetch('/v1/health').then(r => r.json()).catch(() => ({})),
+        fetch('/v1/accounts', { headers: { 'Authorization': 'Bearer ' + tok } }).then(r => r.json()).catch(() => ({})),
+        fetch('/v1/state',    { headers: { 'Authorization': 'Bearer ' + tok } }).then(r => r.json()).catch(() => ({})),
+        fetch('/v1/positions', { headers: { 'Authorization': 'Bearer ' + tok } }).then(r => r.json()).catch(() => ({})),
+        fetch('/v1/fills',     { headers: { 'Authorization': 'Bearer ' + tok } }).then(r => r.json()).catch(() => ({})),
+      ]);
+      showSync('GET /v1/health + /v1/state + /v1/accounts + /v1/positions + /v1/fills',
+        { health: v1health, accounts: v1accounts, state: v1state, positions: v1positions, fills: v1fills },
+        'ok');
+    } catch (e) {
+      showSync('Network error: ' + e.message, {}, 'err');
+    } finally {
+      syncStateBtn.disabled = false; syncStateBtn.textContent = 'Refresh state';
+    }
+  });
   </script>
 </body>
 </html>`;
@@ -335,6 +392,50 @@ export async function restRoutes(app: FastifyInstance) {
       });
     }
     return toPublicAccount(row);
+  });
+
+  // POST /v1/sync — re-trigger broker session + account_status events
+  // for every account in the tenant. Useful when the SlotService.mq5
+  // auto-attach didn't fire on boot (e.g. MT5 build 5836 has services
+  // off by default, see SlotService commit history). The handler
+  // re-runs the validator for every account, which:
+  //   1. re-decrypts the password
+  //   2. calls connector.connect() → re-publishes the login command
+  //      to ZMQ outbound tcp://5556
+  //   3. waits up to 15s for an inbound account_status event
+  //
+  // If the PublisherZMQEvents.ex5 is attached to a chart, the slot
+  // will start seeing account_status + fill events within seconds.
+  // If it isn't, the call is a no-op (commands go nowhere, no fills
+  // arrive) and the user gets a clear hint in the response.
+  app.post('/v1/sync', async (req) => {
+    requireScope(req, 'slot:write');
+    const c = getClaims(req);
+    const accounts = deps.accounts.list(c.tenant_id);
+    const triggered: Array<{
+      id: string;
+      broker_server: string;
+      broker_login: string;
+      previous_status: string;
+    }> = [];
+    for (const row of accounts) {
+      if (row.status === 'disabled') continue;
+      triggered.push({
+        id: row.id,
+        broker_server: row.broker_server,
+        broker_login: row.broker_login,
+        previous_status: row.status,
+      });
+      validateAccount(deps, c.tenant_id, row);
+    }
+    return {
+      triggered_at: Date.now(),
+      accounts: triggered,
+      hint:
+        accounts.length === 0
+          ? 'No accounts yet. POST /v1/accounts to provision one, or just hit Sync after a manual MT5 login (it will create one on the next event).'
+          : 'Re-validator dispatched for every account. The MT5 connector republished the login command to ZMQ outbound. If PublisherZMQEvents.ex5 is attached to a chart, account_status + fills will flow within seconds. If the events do not arrive, see Tools → Options → Expert Advisors → Allow services in the MT5 client.',
+    };
   });
 
   // ────────────── orders ──────────────
