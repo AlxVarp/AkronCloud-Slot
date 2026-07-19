@@ -1,13 +1,15 @@
 //+------------------------------------------------------------------+
-//| SlotService.mq5 - chart-indicator that bridges the slot service   |
-//|             with the embedded MT5 instance.                       |
+//| SlotService.mq5 - service that bridges the slot with MT5          |
+//|             (no chart required).                                 |
 //+------------------------------------------------------------------+
 //
-// Phase B+ replacement for the SlotService.mq5 service. Runs as a
-// #property indicator (auto-attached to a chart via a template that
-// MT5 opens on first boot). Communicates with the slot's bridge-
-// adapter purely via files in MQL5/Files/ so no ZMQ / rpyc / Python
-// runtime is required inside wine.
+// Runs as a #property service, launched by MT5 at terminal startup
+// (registered in MQL5/profiles/default/services.ini). No chart
+// dependency, no template, no manual attach.
+//
+// Communicates with the slot's bridge-adapter purely via files in
+// MQL5/Files/ so no ZMQ / rpyc / Python runtime is required inside
+// wine.
 //
 // File protocol (all paths under MQL5/Files/):
 //
@@ -36,7 +38,7 @@
 //+------------------------------------------------------------------+
 #property copyright "akroncloud-slot"
 #property version   "2.00"
-#property indicator
+#property service
 #property strict  false
 
 #include <Files\File.mqh>
@@ -57,15 +59,10 @@ input int     StartupMarkerWaitMs = 3000;
 datetime g_lastPollTime       = 0;
 string   g_lastProcessedCmdId  = "";
 datetime g_lastCmdMtime       = 0;
-int      g_publisherHandle      = INVALID_HANDLE;
 
-int OnInit()
+int OnStart()
 {
-   PrintFormat("SlotService: init on %s poll=%ds", _Symbol, PollSeconds);
-   // Attach the legacy PublisherZMQEvents if it is present in
-   // MQL5/Indicators so operators who already wire that path keep
-   // their existing dashboards. (No-op if the file is absent.)
-   g_publisherHandle = iCustom(NULL, 0, "PublisherZMQEvents");
+   PrintFormat("SlotService: start on %s poll=%ds", _Symbol, PollSeconds);
    // Mark autostart done.
    WriteStartupMarker();
    // Initial snapshot so the slot's adapter has state immediately.
@@ -73,11 +70,6 @@ int OnInit()
    g_lastPollTime = TimeCurrent();
    EventSetMillisecondTimer(MathMax(250, PollSeconds * 1000));
    return INIT_SUCCEEDED;
-}
-
-void OnDeinit(const int reason)
-{
-   EventKillMillisecondTimer();
 }
 
 void OnTimer()
