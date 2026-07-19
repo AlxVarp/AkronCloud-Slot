@@ -83,8 +83,8 @@ void OnTimer()
 }
 
 void OnTradeTransaction(const MqlTradeTransaction &trans,
-                       const MqlRequest &request,
-                       const MqlResult &result)
+                       const MqlTradeRequest &request,
+                       const MqlTradeResult &result)
 {
    string kind = "order_state";
    string data = "";
@@ -104,29 +104,17 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
          "{\"broker_order_id\":\"%I64d\",\"order\":%d,\"deal\":%I64d,\"symbol\":\"%s\"}",
          trans.order, trans.order_state, trans.deal, trans.symbol);
    }
-   else if(trans.type == TRADE_TRANSACTION_ORDER_ADD)
-   {
-      kind = "order_state";
-      data = StringFormat(
-         "{\"order_id\":\"%I64d\",\"status\":\"placed\"}", trans.order);
-   }
-   else if(trans.type == TRADE_TRANSACTION_ORDER_DELETE)
-   {
-      kind = "order_state";
-      data = StringFormat(
-         "{\"order_id\":\"%I64d\",\"status\":\"canceled\"}", trans.order);
-   }
-   else if(trans.type == TRADE_TRANSACTION_ORDER_UPDATE ||
-           trans.type == TRADE_TRANSACTION_HISTORY_UPDATE)
+   else if(trans.type == TRADE_TRANSACTION_HISTORY_UPDATE)
    {
       kind = "order_state";
       data = StringFormat(
          "{\"order_id\":\"%I64d\",\"status\":\"updated\"}", trans.order);
    }
-   else if(trans.type == TRADE_TRANSACTION_ACCOUNT)
+   else if(trans.type == TRADE_TRANSACTION_POSITION)
    {
-      kind = "account";
-      data = "{\"kind\":\"login\"}";
+      kind = "position";
+      data = StringFormat(
+         "{\"order_id\":\"%I64d\",\"symbol\":\"%s\"}", trans.position, trans.symbol);
    }
    else
    {
@@ -190,7 +178,7 @@ void WriteStateFile()
    if(h == INVALID_HANDLE) return;
    FileWriteString(h, json);
    FileClose(h);
-   FileMove(tmp, path, FILE_REWRITE);
+   FileMove(tmp, 0, path, FILE_REWRITE);
 }
 
 string BuildStateJson()
@@ -216,12 +204,13 @@ string BuildStateJson()
    {
       ulong ticket = PositionGetTicket(i);
       if(ticket == 0) continue;
+      if(!PositionSelectByTicket(ticket)) continue;
       string sym = PositionGetSymbol(ticket);
-      int    dir = (int)PositionGetInteger(ticket, POSITION_TYPE);
-      double vol = PositionGetDouble(ticket, POSITION_VOLUME);
-      double op  = PositionGetDouble(ticket, POSITION_PRICE_OPEN);
-      double sl  = PositionGetDouble(ticket, POSITION_SL);
-      double tp  = PositionGetDouble(ticket, POSITION_TP);
+      int    dir = (int)PositionGetInteger(POSITION_TYPE);
+      double vol = PositionGetDouble(POSITION_VOLUME);
+      double op  = PositionGetDouble(POSITION_PRICE_OPEN);
+      double sl  = PositionGetDouble(POSITION_SL);
+      double tp  = PositionGetDouble(POSITION_TP);
       if(i < PositionsTotal() - 1) pos += ",";
       pos += StringFormat(
          "{\"id\":\"%I64u\",\"account_id\":\"\",\"instrument\":\"%s\","
@@ -236,22 +225,25 @@ string BuildStateJson()
    {
       ulong ticket = OrderGetTicket(i);
       if(ticket == 0) continue;
-      string sym = OrderGetString(ticket, ORDER_SYMBOL);
-      int    type = (int)OrderGetInteger(ticket, ORDER_TYPE);
-      int    dir  = (int)OrderGetInteger(ticket, ORDER_DIRECTION);
-      double vol  = OrderGetDouble(ticket, ORDER_VOLUME_INITIAL);
-      double op   = OrderGetDouble(ticket, ORDER_PRICE_OPEN);
-      int    state = (int)OrderGetInteger(ticket, ORDER_STATE);
+      if(!OrderSelect(ticket)) continue;
+      string sym = OrderGetString(ORDER_SYMBOL);
+      int    type = (int)OrderGetInteger(ORDER_TYPE);
+      bool   isBuy = (type == ORDER_TYPE_BUY
+                   || type == ORDER_TYPE_BUY_LIMIT
+                   || type == ORDER_TYPE_BUY_STOP
+                   || type == ORDER_TYPE_BUY_STOP_LIMIT);
+      double vol  = OrderGetDouble(ORDER_VOLUME_INITIAL);
+      double op   = OrderGetDouble(ORDER_PRICE_OPEN);
+      int    state = (int)OrderGetInteger(ORDER_STATE);
       if(i < OrdersTotal() - 1) ords += ",";
       string stype;
-      if(type == ORDER_TYPE_BUY)        stype = "buy";
-      else if(type == ORDER_TYPE_SELL)   stype = "sell";
-      else                                stype = "limit";
+      if(type == ORDER_TYPE_BUY || type == ORDER_TYPE_SELL) stype = "market";
+      else                                                  stype = "limit";
       ords += StringFormat(
          "{\"id\":\"%I64u\",\"account_id\":\"\",\"instrument\":\"%s\","
          "\"side\":\"%s\",\"type\":\"%s\",\"qty\":%.8f,\"price\":%.8f,\"status\":%d}",
          ticket, JsonEscape(sym),
-         dir == ORDER_DIRECTION_BUY ? "buy" : "sell",
+         isBuy ? "buy" : "sell",
          stype, vol, op, state);
    }
    ords += "]";
@@ -304,7 +296,10 @@ void TryProcessCommand()
       req.action    = TRADE_ACTION_DEAL;
       req.symbol    = sym;
       req.volume    = vol;
-      req.type      = price > 0 ? ORDER_TYPE_LIMIT : ORDER_TYPE_MARKET;
+      bool isBuy = (dir == ORDER_TYPE_BUY);
+      req.type      = price > 0
+                      ? (isBuy ? ORDER_TYPE_BUY_LIMIT : ORDER_TYPE_SELL_LIMIT)
+                      : (isBuy ? ORDER_TYPE_BUY      : ORDER_TYPE_SELL);
       req.price     = price;
       req.sl        = sl;
       req.tp        = tp;
@@ -336,8 +331,9 @@ void TryProcessCommand()
          req.action = TRADE_ACTION_DEAL;
          req.position = ticket;
          req.symbol = PositionGetSymbol(ticket);
-         req.volume = PositionGetDouble(ticket, POSITION_VOLUME);
-         req.type = ORDER_TYPE_MARKET;
+         req.volume = PositionGetDouble(POSITION_VOLUME);
+         bool closeBuy = ((int)PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY);
+         req.type = closeBuy ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
          req.deviation = 10;
          MqlTradeResult res;
          ZeroMemory(res);
@@ -352,7 +348,8 @@ void TryProcessCommand()
       if(ticket == 0) { result = "{\"error\":\"missing_ticket\"}"; }
       else
       {
-         ok = OrderDelete(ticket);
+         CTrade trade;
+         ok = trade.OrderDelete(ticket);
          result = ok ? ("{\"canceled\":\"" + IntegerToString((long)ticket) + "\"}")
                      : ("{\"error\":\"cancel_failed\"}");
       }
