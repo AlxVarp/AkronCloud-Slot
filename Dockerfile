@@ -147,6 +147,8 @@ RUN cat > /config/.config/openbox/autostart <<'AUTOSTART'
 #!/bin/sh
 export DISPLAY=:0
 export WINEPREFIX=/config/.wine
+export HOME=/config
+export XDG_RUNTIME_DIR=/config/.XDG
 # Start the program-files MT5. /Metatrader/start.sh is no longer
 # needed because the chart-indicator does the heavy lifting (it
 # publishes events/state to MQL5/Files/, the bridge-adapter pushes
