@@ -302,15 +302,22 @@ def main():
 
     ctx = zmq.Context.instance()
 
-    # PUB side (events) — bind
+    # PUB side (events) — bind on 5557 (the slot's mt5-zmq.ts
+    # is a SUB that connects to this port and parses the same
+    # JSON event shapes the old PublisherZMQEvents.ex5 used).
     evt_sock = ctx.socket(zmq.PUB)
     evt_sock.bind(ZMQ_EVT_ENDPOINT)
     log.info("PUB events bound on %s", ZMQ_EVT_ENDPOINT)
 
-    # PULL side (commands) — bind
-    cmd_sock = ctx.socket(zmq.PULL)
-    cmd_sock.bind(ZMQ_CMD_ENDPOINT)
-    log.info("PULL commands bound on %s", ZMQ_CMD_ENDPOINT)
+    # SUB side (commands) — connect to 5556. The slot's Mt5Connector
+    # is a PUB that BINDs on 5556 (zeromq Publisher). We SUBSCRIBE to
+    # those commands and forward each one to the bridge via HTTP. The
+    # previous design (PULL on 5556) collided with the slot's PUB
+    # binding the same port.
+    cmd_sock = ctx.socket(zmq.SUB)
+    cmd_sock.connect(ZMQ_CMD_ENDPOINT)
+    cmd_sock.setsockopt_string(zmq.SUBSCRIBE, "")  # all messages
+    log.info("SUB commands connected to %s", ZMQ_CMD_ENDPOINT)
 
     # emit() writes events to ZMQ PUB
     def emit(event: dict):
