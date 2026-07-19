@@ -180,7 +180,7 @@ RUN chmod +x /config/.config/openbox/autostart \
 # runtime) and emits ZMQ events to the slot on tcp://5557.
 COPY --chown=root:root src/services/mt5-bridge-adapter.py /opt/akron-mt5-bridge-adapter.py
 RUN mkdir -p /etc/s6-overlay/s6-rc.d/svc-mt5-bridge-adapter && \
-    printf '#!/usr/bin/with-contenv bash\nexec /usr/local/bin/python3 /opt/akron-mt5-bridge-adapter.py\n' \
+    printf '#!/usr/bin/with-contenv bash\nexec /usr/bin/python3 /opt/akron-mt5-bridge-adapter.py\n' \
       > /etc/s6-overlay/s6-rc.d/svc-mt5-bridge-adapter/run && \
     chmod +x /etc/s6-overlay/s6-rc.d/svc-mt5-bridge-adapter/run && \
     printf 'longrun\n' > /etc/s6-overlay/s6-rc.d/svc-mt5-bridge-adapter/type && \
