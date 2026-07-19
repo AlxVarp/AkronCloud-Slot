@@ -138,10 +138,11 @@ RUN chmod +x /etc/s6-overlay/s6-rc.d/svc-kasmvnc/run
 # purely via MQL5/Files/ (the bridge-adapter is a Python file-watcher
 # that translates those files to/from ZMQ :5556/:5557).
 #
-# Trade-off: the bridge-adapter needs the user to manually attach
-# SlotService to a chart the FIRST time (Tools → Indicators →
-# Custom → SlotService). After that, the chart template persists in
-# /config (volume) so subsequent boots auto-attach.
+# Service mode (commits a606493 + 0499462): SlotService.mq5 is a
+# #property service, registered in services.ini below. MT5 launches
+# it at terminal startup, BEFORE any chart is loaded. No chart-
+# template dependency, no manual attach. The bridge-adapter
+# consumes the files the service writes to MQL5/Files/.
 ENV WINEDEBUG=-all
 RUN cat > /config/.config/openbox/autostart <<'AUTOSTART'
 #!/bin/sh
@@ -182,23 +183,25 @@ RUN mkdir -p /etc/s6-overlay/s6-rc.d/svc-mt5-bridge-adapter && \
     touch /etc/s6-overlay/s6-rc.d/user/contents.d/svc-mt5-bridge-adapter
 
 # SlotService.ex5 ships pre-compiled in the repo (mql5/SlotService.ex5).
-# R2 (Phase B+): now a #property indicator (was a #property service).
-# Compiled locally with MetaEditor (see mql5/SlotService.mq5 for the
-# source) and committed to the repo, baked into the image under
-# MQL5/Indicators/ so MT5 can load it as an indicator. Auto-attach
-# happens via a chart template (mql5/profiles/default/chart01.tpl) that
-# MT5 opens on first chart load; the indicator attaches itself the
-# first time the user drags it from the Navigator. After that, the
-# template persists in /config (volume) so subsequent boots
-# auto-attach the indicator.
-COPY ["mql5/SlotService.ex5", "/config/.wine/drive_c/users/abc/MetaTrader 5/MQL5/Indicators/SlotService.ex5"]
+# Service mode (commits a606493 + 0499462): #property service,
+# registered in services.ini below. MT5 launches it at terminal
+# startup, before any chart is loaded — no chart-template
+# dependency, no manual attach. Compiled inside
+# ghcr.io/alxvarp/akron-mt5-base:mt5-preinstalled with
+# MetaEditor64.exe via Wine (see mql5/SlotService.mq5 for the
+# source).
+COPY ["mql5/SlotService.ex5", "/config/.wine/drive_c/users/abc/MetaTrader 5/MQL5/Services/SlotService.ex5"]
 RUN chown abc:abc \
-   /config/.wine/drive_c/users/abc/MetaTrader\ 5/MQL5/Indicators/SlotService.ex5
+   /config/.wine/drive_c/users/abc/MetaTrader\ 5/MQL5/Services/SlotService.ex5
 
-# (services.ini removed in R2 — the indicator does not need to be
-# registered as a service; MT5 loads it automatically when a chart
-# that references it opens. The bridge-adapter sees the file events
-# it writes to MQL5/Files/ and forwards them to ZMQ.)
+# Register the service in the user's default profile so MT5
+# auto-runs it on every terminal boot. The service runs BEFORE
+# any chart is loaded; the bridge-adapter sees the file events
+# it writes to MQL5/Files/ and forwards them to ZMQ.
+RUN mkdir -p "/config/.wine/drive_c/users/abc/MetaTrader 5/profiles/default" \
+ && printf '%s\n' '[Services]' 'SlotService=SlotService.ex5' \
+    > "/config/.wine/drive_c/users/abc/MetaTrader 5/profiles/default/services.ini" \
+ && chown -R abc:abc /config/.wine
 
 EXPOSE 7777
 HEALTHCHECK --interval=30s --timeout=3s --start-period=30s --retries=3 \
