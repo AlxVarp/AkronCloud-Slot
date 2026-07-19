@@ -9,15 +9,14 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: ghcr.io/alxvarp/akroncloud-slot:0.2.0-mt5-bridge
+    image: ghcr.io/alxvarp/akroncloud-slot:0.2.0-mt5-bridge-v7
     container_name: akroncloud-slot
     restart: unless-stopped
     env_file:
       - .env
     ports:
       - "0.0.0.0:7777:7777"   # Slot API (REST + WS)
-      - "0.0.0.0:3000:3000"   # KasmVNC noVNC (broker login via browser)
-      - "0.0.0.0:8003:8003"   # mt5copy_bridge HTTP (debug; /health, /action)
+      - "0.0.0.0:3000:3000"   # KasmVNC noVNC (broker login via browser; chart-indicator attach on first boot)
     volumes:
       - slot-state:/var/lib/akron-slot
     healthcheck:

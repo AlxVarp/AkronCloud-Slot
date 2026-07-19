@@ -131,75 +131,46 @@ exec s6-setuidgid abc \
 EOSVCKASM
 RUN chmod +x /etc/s6-overlay/s6-rc.d/svc-kasmvnc/run
 
-# Replace the base image's autostart with a launcher that delegates to
-# the base image's /Metatrader/start.sh. That script does the heavy
-# lifting (installs Python embed + pip in wine, starts the mt5linux
-# rpyc server, then mt5copy_bridge on :8003, then mt5copy_worker on
-# :8002). Operational profile + MT5_HEADLESS=1 keeps the desktop
-# quiet (no MetaEditor window) and MT5_PUBLISHER_BOOTSTRAP_UI=0 means
-# the bridge does the publishing — no MQL5 SlotService.mq5 needed
-# (so MT5's "Allow services" toggle is irrelevant).
+# Replace the base image's autostart with a minimal launcher that
+# starts the program-files MT5 directly. R2 (Phase B+) does NOT need
+# the mt5copy_bridge / mt5copy_worker / mt5linux_server stack — the
+# chart-indicator SlotService.mq5 talks to the slot's bridge-adapter
+# purely via MQL5/Files/ (the bridge-adapter is a Python file-watcher
+# that translates those files to/from ZMQ :5556/:5557).
 #
-# Trade-off vs the previous minimal launcher: 2-3 min first-boot vs
-# 10 s, because of the wine-mono + Python embed + pip install. We
-# accept this because the trade gives us a fully automated MT5
-# control path that the slot can drive via the bridge's HTTP API.
-#
-# The slot's src/services/mt5-bridge-adapter.py runs as its own s6
-# service below; it talks to the bridge on :8003 and bridges between
-# the bridge's HTTP API and the slot's existing ZMQ protocol
-# (tcp://5556 cmd / tcp://5557 events).
-ENV MT5_RUNTIME_PROFILE=operational \
-    MT5_HEADLESS=1 \
-    MT5_PUBLISHER_BOOTSTRAP_UI=0 \
-    MT5COPY_BRIDGE_PORT=8003 \
-    MT5COPY_WORKER_PORT=8002
+# Trade-off: the bridge-adapter needs the user to manually attach
+# SlotService to a chart the FIRST time (Tools → Indicators →
+# Custom → SlotService). After that, the chart template persists in
+# /config (volume) so subsequent boots auto-attach.
+ENV WINEDEBUG=-all
 RUN cat > /config/.config/openbox/autostart <<'AUTOSTART'
 #!/bin/sh
 export DISPLAY=:0
 export WINEPREFIX=/config/.wine
-export WINEDEBUG=-all
-exec /Metatrader/start.sh
+# Start the program-files MT5. /Metatrader/start.sh is no longer
+# needed because the chart-indicator does the heavy lifting (it
+# publishes events/state to MQL5/Files/, the bridge-adapter pushes
+# them to ZMQ). start.sh's role was to host the bridge on :8003
+# which we don't need anymore.
+exec /opt/wine-stable/bin/wine "/config/.wine/drive_c/Program Files/MetaTrader 5/terminal64.exe" /portable /skipupdate
 AUTOSTART
 RUN chmod +x /config/.config/openbox/autostart \
  && chown abc:abc /config/.config/openbox/autostart \
  && chown -R abc:abc /config/.wine
 
-# akroncloud-slot — bridge runtime fixes. The base image ships MT5 in
-# `/config/.wine/drive_c/Program Files/MetaTrader 5/`. The bridge's
-# runtime looks for the terminal at the user-space path
-# `/config/.wine/drive_c/users/abc/MetaTrader 5/` (set by
-# MT5COPY_MT5_PATH_USER). start.sh normally populates that path on
-# first boot by downloading mt5setup.exe, but if the download fails
-# or was skipped, the directory is missing and the bridge gives up
-# with `terminal-process-missing`. We symlink the user-space binary
-# to the preinstalled program-files one so the bridge finds a valid
-# terminal path, and we write the active-terminal-path.txt so the
-# bridge reads the file (instead of relying on its `ps` filter which
-# only sees its own command line).
-RUN mkdir -p "/config/.wine/drive_c/users/abc/MetaTrader 5" \
- && ln -sfn "/config/.wine/drive_c/Program Files/MetaTrader 5/terminal64.exe" \
-          "/config/.wine/drive_c/users/abc/MetaTrader 5/terminal64.exe" \
- && ln -sfn "/config/.wine/drive_c/Program Files/MetaTrader 5/MQL5" \
-          "/config/.wine/drive_c/users/abc/MetaTrader 5/MQL5" \
- && mkdir -p "/config/.wine/drive_c/Program Files/MetaTrader 5/MQL5/Files" \
- && printf "%s" "/config/.wine/drive_c/Program Files/MetaTrader 5/terminal64.exe" \
-    > "/config/.wine/drive_c/Program Files/MetaTrader 5/MQL5/Files/active-terminal-path.txt" \
- && chown -R abc:abc "/config/.wine/drive_c/users/abc"
+# Ensure MQL5/Files/ exists so the chart-indicator can write there from
+# the moment it attaches (otherwise the first write might race).
+RUN mkdir -p "/config/.wine/drive_c/users/abc/MetaTrader 5/MQL5/Files" \
+ && chown -R abc:abc "/config/.wine/drive_c/users/abc/MetaTrader 5/MQL5"
 
-# akroncloud-slot — bridge-adapter: Python ZMQ↔HTTP bridge that
-# translates between the slot's existing ZMQ protocol (tcp://5556
-# inbound commands, tcp://5557 outbound events) and the
-# akron-mt5-base's mt5copy_bridge HTTP API on :8003. The bridge
-# runs INSIDE the container (started by /Metatrader/start.sh from
-# the autostart above) and is what gives us a fully automated path
-# to MT5 — no MQL5 services, no "Allow services" toggle.
-#
-# The adapter waits up to 10 min for the bridge to come up
-# (start.sh does a 2-3 min first-boot that installs wine-mono +
-# Python embed + pip + mt5linux + bridge). After that, every
-# POLL_INTERVAL_MS it polls /health, /action (positions, orders,
-# runtime) and emits ZMQ events to the slot on tcp://5557.
+# akroncloud-slot — bridge-adapter: Python file-watcher that translates
+# between the slot's existing ZMQ protocol (tcp://5556 inbound
+# commands, tcp://5557 outbound events) and the MQL5 chart-indicator's
+# MQL5/Files/ file interface (slot-events.jsonl, slot-state.json,
+# slot-cmd.json, slot-resp.jsonl). Replaces the old HTTP-to-bridge
+# proxy. No HTTP server, no mt5linux_server, no rpyc — just file I/O
+# + ZMQ.
+RUN /usr/bin/pip3 install --break-system-packages --no-cache-dir watchdog
 COPY --chown=root:root src/services/mt5-bridge-adapter.py /opt/akron-mt5-bridge-adapter.py
 RUN mkdir -p /etc/s6-overlay/s6-rc.d/svc-mt5-bridge-adapter && \
     printf '#!/usr/bin/with-contenv bash\nexec /usr/bin/python3 /opt/akron-mt5-bridge-adapter.py\n' \
@@ -209,24 +180,23 @@ RUN mkdir -p /etc/s6-overlay/s6-rc.d/svc-mt5-bridge-adapter && \
     touch /etc/s6-overlay/s6-rc.d/user/contents.d/svc-mt5-bridge-adapter
 
 # SlotService.ex5 ships pre-compiled in the repo (mql5/SlotService.ex5).
-# The compile step we used to do in-container required metaeditor64 +
-# an X server, which doesn't fit a headless docker build. The ex5
-# is compiled once locally with MetaEditor (see mql5/SlotService.mq5
-# for the source) and committed to the repo, then baked into the
-# image at the right path. If the file is missing, the build fails
-# fast so we don't ship a broken image.
-COPY ["mql5/SlotService.ex5", "/config/.wine/drive_c/users/abc/MetaTrader 5/MQL5/Services/SlotService.ex5"]
+# R2 (Phase B+): now a #property indicator (was a #property service).
+# Compiled locally with MetaEditor (see mql5/SlotService.mq5 for the
+# source) and committed to the repo, baked into the image under
+# MQL5/Indicators/ so MT5 can load it as an indicator. Auto-attach
+# happens via a chart template (mql5/profiles/default/chart01.tpl) that
+# MT5 opens on first chart load; the indicator attaches itself the
+# first time the user drags it from the Navigator. After that, the
+# template persists in /config (volume) so subsequent boots
+# auto-attach the indicator.
+COPY ["mql5/SlotService.ex5", "/config/.wine/drive_c/users/abc/MetaTrader 5/MQL5/Indicators/SlotService.ex5"]
 RUN chown abc:abc \
-   /config/.wine/drive_c/users/abc/MetaTrader\ 5/MQL5/Services/SlotService.ex5
+   /config/.wine/drive_c/users/abc/MetaTrader\ 5/MQL5/Indicators/SlotService.ex5
 
-# Register the service in the user's default profile so MT5 auto-runs
-# it on every terminal boot. The service runs BEFORE any chart is
-# loaded, finds the saved chart (or opens one), and ChartIndicatorAdd's
-# the publisher EA onto it.
-RUN mkdir -p /config/.wine/drive_c/users/abc/MetaTrader\ 5/profiles/default \
- && printf '%s\n' '[Services]' 'SlotService=SlotService.ex5' \
-    > /config/.wine/drive_c/users/abc/MetaTrader\ 5/profiles/default/services.ini \
- && chown -R abc:abc /config/.wine
+# (services.ini removed in R2 — the indicator does not need to be
+# registered as a service; MT5 loads it automatically when a chart
+# that references it opens. The bridge-adapter sees the file events
+# it writes to MQL5/Files/ and forwards them to ZMQ.)
 
 EXPOSE 7777
 HEALTHCHECK --interval=30s --timeout=3s --start-period=30s --retries=3 \

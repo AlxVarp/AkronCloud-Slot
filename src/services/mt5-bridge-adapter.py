@@ -1,46 +1,49 @@
 #!/usr/bin/env python3
 """
-mt5-bridge-adapter — translates between the slot's ZMQ protocol
-(tcp://*:5556 inbound commands, tcp://*:5557 outbound events) and
-the akron-mt5-base's mt5copy_bridge HTTP API (http://127.0.0.1:8003).
+mt5-bridge-adapter — file_bridge between the MQL5 chart-indicator
+(SlotService.mq5, compiled to MQL5/Indicators/SlotService.ex5) and
+the slot's Mt5Connector (Node.js, in src/connectors/mt5.ts).
 
-The bridge runs INSIDE the slot container (started by /Metatrader/start.sh
-which sets up Python embed + mt5linux + bridge in operational profile).
-The bridge is a Python process inside wine that talks to MT5 via the
-mt5linux rpyc protocol; it exposes a small HTTP API to the outside
-world (action = open / close / positions / runtime / etc.) so we don't
-need MT5's "Allow services" toggle or a running MQL5 service.
+Replaces the previous bridge HTTP proxy (mt5copy_bridge). The MQL5
+indicator writes everything to MQL5/Files/ (events, state, startup
+marker, commands read). The adapter:
 
-This adapter replaces what the now-deprecated SlotService.mq5 +
-PublisherZMQEvents.ex5 pipeline used to do: the slot's Mt5Connector
-publishes commands on ZMQ 5556 and expects fills + order_state +
-account events on ZMQ 5557. The adapter consumes the same shapes.
+  - watches MQL5/Files/slot-events.jsonl for new lines (one JSON per
+    line) and publishes each to ZMQ :5557 (events stream)
+  - watches MQL5/Files/slot-state.json for snapshots and re-publishes
+    the latest on changes (so /v1/state works even before the first
+    tick of the chart)
+  - subscribes ZMQ :5556 (commands from the slot's Mt5Connector) and
+    writes them to MQL5/Files/slot-cmd.json (atomic write via .tmp +
+    rename so the indicator sees a complete file)
+  - watches MQL5/Files/slot-resp.jsonl for command responses (kept
+    for debugging, the slot doesn't currently consume these)
 
-Usage:
-  BRIDGE_URL=http://127.0.0.1:8003 \
-  ZMQ_CMD_ENDPOINT=tcp://*:5556 \
-  ZMQ_EVT_ENDPOINT=tcp://*:5557 \
-  POLL_INTERVAL_MS=500 \
-  python3 src/services/mt5-bridge-adapter.py
+No HTTP bridge, no mt5linux_server, no rpyc. Just file I/O + ZMQ.
+
+Run via s6 as `svc-mt5-bridge-adapter` (the Dockerfile sets this up).
 """
 import json
-import logging
 import os
-import sys
 import time
 from threading import Thread
 
-import urllib.request
-import urllib.error
-
 import zmq
+from watchdog.events import FileSystemEventHandler
+from watchdog.observers import Observer
 
-BRIDGE_URL = os.environ.get("BRIDGE_URL", "http://127.0.0.1:8003").rstrip("/")
-ZMQ_CMD_ENDPOINT = os.environ.get("ZMQ_CMD_ENDPOINT", "tcp://*:5556")
-ZMQ_EVT_ENDPOINT = os.environ.get("ZMQ_EVT_ENDPOINT", "tcp://*:5557")
-POLL_INTERVAL_MS = int(os.environ.get("POLL_INTERVAL_MS", "500"))
-LOG_LEVEL = os.environ.get("LOG_LEVEL", "info").upper()
+MT5_FILES         = "/config/.wine/drive_c/users/abc/MetaTrader 5/MQL5/Files"
+EVENTS_FILE       = f"{MT5_FILES}/slot-events.jsonl"
+STATE_FILE        = f"{MT5_FILES}/slot-state.json"
+CMD_FILE          = f"{MT5_FILES}/slot-cmd.json"
+RESP_FILE         = f"{MT5_FILES}/slot-resp.jsonl"
 
+ZMQ_CMD_ENDPOINT  = os.environ.get("ZMQ_CMD_ENDPOINT", "tcp://127.0.0.1:5556")
+ZMQ_EVT_ENDPOINT  = os.environ.get("ZMQ_EVT_ENDPOINT", "tcp://*:5557")
+LOG_LEVEL         = os.environ.get("LOG_LEVEL", "info").upper()
+BOOT_WAIT_SECONDS = int(os.environ.get("BOOT_WAIT_SECONDS", "180"))
+
+import logging
 logging.basicConfig(
     level=getattr(logging, LOG_LEVEL, logging.INFO),
     format="%(asctime)s %(levelname)s bridge-adapter %(message)s",
@@ -48,287 +51,161 @@ logging.basicConfig(
 log = logging.getLogger("bridge-adapter")
 
 
-# ───────────────────────── HTTP bridge client ─────────────────────────
-
-def http_post(path: str, body: dict, timeout: float = 5.0) -> dict:
-    """POST JSON to the bridge and return the parsed response."""
-    data = json.dumps(body).encode("utf-8")
-    req = urllib.request.Request(
-        f"{BRIDGE_URL}{path}",
-        data=data,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+_last_state_json = None
+_events_offset   = 0
+_resp_offset     = 0
 
 
-def http_get(path: str, timeout: float = 3.0) -> dict:
-    """GET from the bridge and return the parsed response."""
-    with urllib.request.urlopen(f"{BRIDGE_URL}{path}", timeout=timeout) as resp:
-        return json.loads(resp.read().decode("utf-8"))
-
-
-def bridge_health() -> dict:
+def _read_new_lines(path, start_offset):
+    out = []
     try:
-        return http_get("/health", timeout=2.0)
-    except (urllib.error.URLError, ConnectionError, TimeoutError, OSError) as exc:
-        return {"ok": False, "error": repr(exc)}
-
-
-def bridge_action(action: str, payload: dict) -> dict:
-    return http_post("/action", {"action": action, "payload": payload})
-
-
-# ───────────────────────── state cache + diff → events ─────────────────────────
-
-_cache = {
-    "loggedIn": False,
-    "balance": 0.0,
-    "equity": 0.0,
-    "margin": 0.0,
-    "positions": {},  # by position id
-    "orders": {},     # by order id
-}
-
-
-def _positions_snapshot() -> dict:
-    """Pull current positions, return {pos_id: pos_dict}."""
-    res = bridge_action("positions", {})
-    if not res.get("ok"):
-        return {}
-    out = {}
-    for p in res.get("positions", []) or []:
-        pid = str(p.get("id") or p.get("ticket") or p.get("comment") or "")
-        if not pid:
-            continue
-        out[pid] = {
-            "id": pid,
-            "account_id": p.get("account_id"),
-            "instrument": p.get("symbol") or p.get("instrument"),
-            "side": "long" if (p.get("type") or "").lower().startswith("buy") or p.get("side") == "long" else "short",
-            "qty": float(p.get("volume") or p.get("qty") or 0),
-            "avg_price": float(p.get("price_open") or p.get("price") or 0),
-            "mark_price": float(p.get("price_current") or p.get("price") or 0),
-        }
-    return out
-
-
-def _orders_snapshot() -> dict:
-    res = bridge_action("orders", {})
-    if not res.get("ok"):
-        return {}
-    out = {}
-    for o in res.get("orders", []) or []:
-        oid = str(o.get("id") or o.get("ticket") or o.get("comment") or "")
-        if not oid:
-            continue
-        out[oid] = {
-            "id": oid,
-            "account_id": o.get("account_id"),
-            "instrument": o.get("symbol") or o.get("instrument"),
-            "side": o.get("side") or ("buy" if (o.get("type") or "").lower().startswith("buy") else "sell"),
-            "qty": float(o.get("volume_initial") or o.get("volume") or 0),
-            "type": o.get("type"),
-            "price": o.get("price_open"),
-            "status": (o.get("state") or "pending").lower(),
-        }
-    return out
-
-
-def _account_state() -> dict:
-    """Pull account snapshot (balance, equity, margin, logged_in)."""
-    res = bridge_action("runtime", {"includeDeals": False, "includeSymbols": False})
-    info = res.get("info") or res.get("account") or {}
-    return {
-        "loggedIn": bool(info.get("trade_allowed") or info.get("logged_in") or res.get("ok")),
-        "balance": float(info.get("balance") or 0),
-        "equity": float(info.get("equity") or 0),
-        "margin": float(info.get("margin") or 0),
-    }
-
-
-def _diff_and_emit(emit):
-    """Compare current state to cache, emit events on diff, update cache."""
-    global _cache
-    try:
-        acct = _account_state()
+        with open(path, "rb") as f:
+            f.seek(start_offset)
+            data = f.read()
+    except FileNotFoundError:
+        return out, start_offset
     except Exception as exc:
-        log.debug("account_state error: %s", exc)
+        log.warning("read %s failed: %s", path, exc)
+        return out, start_offset
+    if not data:
+        return out, start_offset
+    out = data.decode("utf-8", errors="replace").splitlines()
+    return out, start_offset + len(data)
+
+
+def _publish_state_once(pub, initial=False):
+    global _last_state_json
+    try:
+        with open(STATE_FILE, "r") as f:
+            data = f.read().strip()
+    except FileNotFoundError:
         return
-    if (
-        acct["loggedIn"] != _cache["loggedIn"]
-        or abs(acct["balance"] - _cache["balance"]) > 1e-6
-        or abs(acct["equity"] - _cache["equity"]) > 1e-6
-    ):
-        if acct["loggedIn"] and not _cache["loggedIn"]:
-            emit({"kind": "account", "data": {"kind": "login"}})
-        if not acct["loggedIn"] and _cache["loggedIn"]:
-            emit({"kind": "account", "data": {"kind": "logout"}})
-        _cache["loggedIn"] = acct["loggedIn"]
-        _cache["balance"] = acct["balance"]
-        _cache["equity"] = acct["equity"]
-        _cache["margin"] = acct["margin"]
-
-    # positions
-    try:
-        new_pos = _positions_snapshot()
     except Exception as exc:
-        log.debug("positions error: %s", exc)
-        new_pos = {}
-    old_pos = _cache["positions"]
-    for pid, p in new_pos.items():
-        if pid not in old_pos:
-            emit({"kind": "fill", "data": {
-                "broker_order_id": pid,
-                "symbol": p["instrument"],
-                "qty": p["qty"],
-                "price": p["avg_price"],
-                "ts": int(time.time() * 1000),
-            }})
-            emit({"kind": "order_state", "data": {
-                "order_id": pid,
-                "status": "filled",
-            }})
-    _cache["positions"] = new_pos
-
-    # orders
+        log.warning("read %s failed: %s", STATE_FILE, exc)
+        return
+    if not data:
+        return
+    if data == _last_state_json and not initial:
+        return
+    _last_state_json = data
     try:
-        new_orders = _orders_snapshot()
-    except Exception as exc:
-        log.debug("orders error: %s", exc)
-        new_orders = {}
-    old_orders = _cache["orders"]
-    for oid, o in new_orders.items():
-        prev = old_orders.get(oid)
-        if prev is None or prev.get("status") != o["status"]:
-            emit({"kind": "order_state", "data": {
-                "order_id": oid,
-                "status": o["status"],
-            }})
-    _cache["orders"] = new_orders
+        json.loads(data)
+    except json.JSONDecodeError:
+        return
+    log.debug("publish state snapshot")
+    pub.send_string(json.dumps({"kind": "state", "data": json.loads(data)}))
 
 
-def poller_loop(emit):
-    """Every POLL_INTERVAL_MS, fetch state from bridge and emit events."""
-    while True:
-        _diff_and_emit(emit)
-        time.sleep(POLL_INTERVAL_MS / 1000.0)
+class _FileHandler(FileSystemEventHandler):
+    def __init__(self, pub):
+        super().__init__()
+        self.pub = pub
+
+    def _drain_events(self):
+        global _events_offset
+        lines, _events_offset = _read_new_lines(EVENTS_FILE, _events_offset)
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                log.debug("skip malformed event: %r", line[:120])
+                continue
+            log.debug("emit event %s", obj.get("kind"))
+            self.pub.send_string(line)
+
+    def _drain_state(self):
+        _publish_state_once(self.pub)
+
+    def _drain_resp(self):
+        global _resp_offset
+        lines, _resp_offset = _read_new_lines(RESP_FILE, _resp_offset)
+        for line in lines:
+            log.info("resp from MT5: %s", line.strip()[:200])
+
+    def on_modified(self, event):
+        p = event.src_path
+        if p == EVENTS_FILE:
+            self._drain_events()
+        elif p == STATE_FILE:
+            self._drain_state()
+        elif p == RESP_FILE:
+            self._drain_resp()
+
+    def on_created(self, event):
+        self.on_modified(event)
 
 
-# ───────────────────────── ZMQ command handling ─────────────────────────
-
-def handle_command(msg: dict) -> dict:
-    """Execute a slot command against the bridge and return a result dict."""
-    t = msg.get("type")
-    try:
-        if t == "login":
-            # bridge assumes MT5 is already logged in; we just verify
-            # health and return ok so the slot's validator can flip
-            # the account to active. Real login happens in the KasmVNC.
-            h = bridge_health()
-            if h.get("ok"):
-                return {"ok": True, "accountRef": f"mt5-{msg.get('server')}-{msg.get('login')}"}
-            return {"ok": False, "reason": "bridge_unavailable", "health": h}
-        if t == "logout":
-            # bridge doesn't track logouts (MT5 is always logged in)
-            return {"ok": True}
-        if t == "place_order":
-            payload = {
-                "instrument": msg.get("instrument"),
-                "side": msg.get("side"),
-                "qty": msg.get("qty"),
-                "order_type": msg.get("order_type", "market"),
-                "price": msg.get("price"),
-                "sl": msg.get("sl"),
-                "tp": msg.get("tp"),
-                "comment": msg.get("client_order_id", ""),
-            }
-            res = bridge_action("open", payload)
-            broker_id = (res.get("ticket") or res.get("id") or
-                         msg.get("client_order_id", ""))
-            return {
-                "ok": bool(res.get("ok")),
-                "order_id": msg.get("client_order_id"),
-                "broker_order_id": str(broker_id),
-            }
-        if t == "close_position":
-            payload = {
-                "ticket": int(msg.get("position_id", 0)) if str(msg.get("position_id", "")).isdigit() else msg.get("position_id"),
-                "qty": msg.get("qty"),
-            }
-            res = bridge_action("close", payload)
-            return {"ok": bool(res.get("ok")), "result": res}
-        return {"ok": False, "reason": "unsupported_type", "type": t}
-    except Exception as exc:
-        return {"ok": False, "reason": "bridge_error", "error": repr(exc)}
+def _write_atomic(path, body):
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        f.write(body)
+    os.replace(tmp, path)
 
 
-def zmq_command_loop(cmd_sock, evt_sock):
-    """Receive ZMQ commands, execute, no reply (events go via evt_sock)."""
-    log.info("ZMQ command loop started on %s", ZMQ_CMD_ENDPOINT)
+def command_loop(cmd_sock, pub):
+    log.info("SUB commands on %s", ZMQ_CMD_ENDPOINT)
     while True:
         try:
             raw = cmd_sock.recv()
         except Exception as exc:
-            log.warning("cmd recv error: %s; reconnecting", exc)
+            log.warning("cmd recv: %s; reconnecting", exc)
             time.sleep(1.0)
             continue
         try:
-            msg = json.loads(raw.decode("utf-8"))
+            cmd = json.loads(raw.decode("utf-8"))
         except Exception as exc:
-            log.warning("bad json on cmd socket: %s", exc)
+            log.warning("bad json on cmd: %s", exc)
             continue
-        result = handle_command(msg)
-        log.info("cmd %s -> %s", msg.get("type"), result.get("ok"))
+        try:
+            slim = {
+                "id": cmd.get("id", ""),
+                "action": cmd.get("action"),
+                "payload": cmd.get("payload", {}),
+            }
+            _write_atomic(CMD_FILE, json.dumps(slim))
+            log.info("cmd %s id=%s", cmd.get("action"), slim["id"])
+        except Exception as exc:
+            log.warning("write cmd failed: %s", exc)
 
 
 def main():
-    log.info("starting bridge-adapter: bridge=%s cmd=%s evt=%s poll=%dms",
-             BRIDGE_URL, ZMQ_CMD_ENDPOINT, ZMQ_EVT_ENDPOINT, POLL_INTERVAL_MS)
+    log.info("starting bridge-adapter: events=%s state=%s cmd=%s zmq_cmd=%s zmq_evt=%s",
+             EVENTS_FILE, STATE_FILE, CMD_FILE, ZMQ_CMD_ENDPOINT, ZMQ_EVT_ENDPOINT)
 
-    # wait for bridge to be reachable (start.sh takes 2-3 min on first boot)
-    deadline = time.time() + 600
+    deadline = time.time() + BOOT_WAIT_SECONDS
     while time.time() < deadline:
-        h = bridge_health()
-        if h.get("ok"):
-            log.info("bridge healthy: %s", h)
+        if os.path.isdir(MT5_FILES):
             break
-        log.info("bridge not ready yet: %s", h)
+        log.info("waiting for %s to exist (chart-indicator not attached yet?)", MT5_FILES)
         time.sleep(5.0)
-    else:
-        log.warning("bridge did not become healthy in 10 min; "
-                    "continuing anyway (events will be no-op until it does)")
 
     ctx = zmq.Context.instance()
-
-    # PUB side (events) — bind on 5557 (the slot's mt5-zmq.ts
-    # is a SUB that connects to this port and parses the same
-    # JSON event shapes the old PublisherZMQEvents.ex5 used).
-    evt_sock = ctx.socket(zmq.PUB)
-    evt_sock.bind(ZMQ_EVT_ENDPOINT)
-    log.info("PUB events bound on %s", ZMQ_EVT_ENDPOINT)
-
-    # SUB side (commands) — connect to 5556. The slot's Mt5Connector
-    # is a PUB that BINDs on 5556 (zeromq Publisher). We SUBSCRIBE to
-    # those commands and forward each one to the bridge via HTTP. The
-    # previous design (PULL on 5556) collided with the slot's PUB
-    # binding the same port.
     cmd_sock = ctx.socket(zmq.SUB)
     cmd_sock.connect(ZMQ_CMD_ENDPOINT)
-    cmd_sock.setsockopt_string(zmq.SUBSCRIBE, "")  # all messages
-    log.info("SUB commands connected to %s", ZMQ_CMD_ENDPOINT)
+    cmd_sock.setsockopt_string(zmq.SUBSCRIBE, "")
 
-    # emit() writes events to ZMQ PUB
-    def emit(event: dict):
-        evt_sock.send_string(json.dumps(event))
-        log.debug("emit %s", event)
+    pub = ctx.socket(zmq.PUB)
+    pub.bind(ZMQ_EVT_ENDPOINT)
+    log.info("PUB events bound on %s", ZMQ_EVT_ENDPOINT)
 
-    # start the poller (emits events on diff)
-    Thread(target=poller_loop, args=(emit,), daemon=True).start()
+    _publish_state_once(pub, initial=True)
 
-    # main thread: consume ZMQ commands
-    zmq_command_loop(cmd_sock, evt_sock)
+    handler = _FileHandler(pub)
+    obs = Observer()
+    obs.schedule(handler, path=MT5_FILES, recursive=False)
+    obs.start()
+    log.info("watching %s", MT5_FILES)
+
+    try:
+        handler._drain_events()
+        handler._drain_state()
+    except Exception as exc:
+        log.warning("initial drain: %s", exc)
+
+    command_loop(cmd_sock, pub)
 
 
 if __name__ == "__main__":
