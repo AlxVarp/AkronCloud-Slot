@@ -153,6 +153,37 @@ export const MOBILE_HTML = `<!DOCTYPE html>
       touch-action: manipulation;
     }
     .kbrow button.muted { color: var(--muted); }
+
+    /* Compact keyboard (4 rows, ~28px tall) - gives the VNC canvas
+       ~120px more room than the original 5-row layout. */
+    #keyboard {
+      flex-shrink: 0;
+      background: var(--panel);
+      border-top: 1px solid var(--border);
+      padding: 4px 4px 6px;
+      touch-action: manipulation;
+      user-select: none;
+    }
+    .kbrow { display: flex; gap: 3px; margin-bottom: 3px; }
+    .kbrow button {
+      flex: 1; min-width: 0;
+      padding: 6px 2px;
+      min-height: 28px;
+      background: var(--bg);
+      color: var(--fg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      font-size: 12px;
+      font-family: ui-monospace, "SF Mono", monospace;
+      cursor: pointer;
+      touch-action: manipulation;
+    }
+    .kbrow button:active { background: #21262d; }
+    .kbrow button.wide { flex: 3; }
+    .kbrow button.xwide { flex: 6; }
+    .kbrow button.accent { background: var(--accent); color: #fff; border-color: var(--accent); }
+    .kbrow button.danger { background: var(--danger); color: #fff; border-color: var(--danger); }
+    .kbrow button.muted { color: var(--muted); }
   </style>
 </head>
 <body>
@@ -169,10 +200,47 @@ export const MOBILE_HTML = `<!DOCTYPE html>
     <div id="placeholder">Loading KasmVNC RFB client…</div>
   </div>
 
-  <div id="keyboard" hidden>
-    <!-- Virtual keyboard removed: user scope is login-only.
-         After login, the only typing path is fillFromCreds() via rfb.sendKey,
-         which doesn't need an on-screen keyboard. -->
+  <div id="keyboard">
+    <div class="kbrow">
+      <button data-key="q">q</button>
+      <button data-key="w">w</button>
+      <button data-key="e">e</button>
+      <button data-key="r">r</button>
+      <button data-key="t">t</button>
+      <button data-key="y">y</button>
+      <button data-key="u">u</button>
+      <button data-key="i">i</button>
+      <button data-key="o">o</button>
+      <button data-key="p">p</button>
+    </div>
+    <div class="kbrow">
+      <button data-key="a">a</button>
+      <button data-key="s">s</button>
+      <button data-key="d">d</button>
+      <button data-key="f">f</button>
+      <button data-key="g">g</button>
+      <button data-key="h">h</button>
+      <button data-key="j">j</button>
+      <button data-key="k">k</button>
+      <button data-key="l">l</button>
+      <button data-key="backspace" class="danger">⌫</button>
+    </div>
+    <div class="kbrow">
+      <button data-key="shift" class="accent" style="flex: 1.5">⇧</button>
+      <button data-key="z">z</button>
+      <button data-key="x">x</button>
+      <button data-key="c">c</button>
+      <button data-key="v">v</button>
+      <button data-key="b">b</button>
+      <button data-key="n">n</button>
+      <button data-key="m">m</button>
+      <button data-key="." class="muted">.</button>
+      <button data-key="-" class="muted">-</button>
+    </div>
+    <div class="kbrow">
+      <button data-key="space" class="xwide muted">space</button>
+      <button data-key="enter" class="accent wide">enter ⏎</button>
+    </div>
   </div>
 </div>
 
