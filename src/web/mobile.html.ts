@@ -288,7 +288,7 @@ export const MOBILE_HTML = `<!DOCTYPE html>
 (function () {
   'use strict';
 
-  var NO_VNC_URL = 'https://cdn.jsdelivr.net/npm/@novnc/novnc@1.4.0/lib/rfb.js';
+  var NO_VNC_URL = 'https://cdn.jsdelivr.net/npm/@novnc/novnc@1.4.0/core/rfb.js';
 
   var statusDot   = document.getElementById('status');
   var statusLabel = document.getElementById('statuslabel');
@@ -313,12 +313,22 @@ export const MOBILE_HTML = `<!DOCTYPE html>
   }
 
   function loadScript(src) {
+    // noVNC 1.4+ ships core/rfb.js as an ES module. Load via
+    // dynamic import (the script tag is type=module to satisfy the
+    // browser's ESM rules). The default export is the RFB class.
     return new Promise(function (resolve, reject) {
       var s = document.createElement('script');
-      s.src = src;
-      s.onload = resolve;
+      s.type = 'module';
+      s.textContent = "import('" + src + "').then(m => { window.RFB = m.default; }).catch(e => { window.__rfbLoadError = e; });";
       s.onerror = function () { reject(new Error('failed to load ' + src)); };
       document.head.appendChild(s);
+      // poll for either RFB or load error
+      var waited = 0;
+      var t = setInterval(function () {
+        if (typeof window.RFB === 'function') { clearInterval(t); resolve(); return; }
+        if (window.__rfbLoadError) { clearInterval(t); reject(window.__rfbLoadError); return; }
+        if (++waited > 100) { clearInterval(t); reject(new Error('timeout loading ' + src)); }
+      }, 100);
     });
   }
 
