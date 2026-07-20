@@ -7,6 +7,7 @@ import { openAndMigrate } from './db/migrate.js';
 import { accountsRepo, type AccountRow } from './db/index.js';
 import { restRoutes } from './api/rest.js';
 import { wsRoutes, startConnectorStream } from './api/ws.js';
+import { internalRoutes } from './api/internal.js';
 import { registerMobileRoutes } from './web/mobile.js';
 import { encrypt, decrypt } from './crypto.js';
 import { verifyToken, extractBearer } from './auth.js';
@@ -115,6 +116,7 @@ export async function buildApp(cfg: AppConfig): Promise<FastifyInstance> {
 
   await app.register(restRoutes);
   await app.register(wsRoutes);
+  await app.register(internalRoutes);
   await app.register(registerMobileRoutes);
 
   // Login detector: watches MT5's window via xdotool, transitions

@@ -45,12 +45,15 @@ export const MOBILE_HTML = `<!DOCTYPE html>
     }
     #app { display: flex; flex-direction: column; height: 100dvh; height: 100vh; }
 
+    /* Slim topbar: dot + label + 3 icon-sized buttons.
+       Goal: maximize screen area for the VNC canvas. */
     #topbar {
-      display: flex; align-items: center; gap: 8px;
-      padding: 8px 12px;
+      display: flex; align-items: center; gap: 6px;
+      padding: 4px 8px;
       background: var(--panel);
       border-bottom: 1px solid var(--border);
       flex-shrink: 0;
+      font-size: 12px;
     }
     #topbar .status {
       display: inline-block; width: 8px; height: 8px;
@@ -67,18 +70,25 @@ export const MOBILE_HTML = `<!DOCTYPE html>
       background: var(--bg); color: var(--fg);
       border: 1px solid var(--border);
       border-radius: 6px;
-      padding: 6px 10px; font-size: 13px;
+      padding: 4px 8px; font-size: 12px;
       cursor: pointer;
+      min-width: 32px;
+      min-height: 32px;
     }
     #topbar button:active { background: #21262d; }
+    #topbar button.primary {
+      background: var(--accent); color: #fff; border-color: var(--accent);
+    }
+    #topbar button.primary:disabled { opacity: .5; }
 
+    /* Full-viewport canvas container. flex:1 so it absorbs everything
+       below the slim topbar (no keyboard, no macros). */
     #screen {
       flex: 1; min-height: 0;
       background: #000;
       position: relative;
-      overflow: auto;
-      -webkit-overflow-scrolling: touch;
-      touch-action: pan-x pan-y;
+      overflow: hidden;
+      touch-action: none;
     }
     #screen canvas { display: block; transform-origin: 0 0; }
     #placeholder {
@@ -86,6 +96,7 @@ export const MOBILE_HTML = `<!DOCTYPE html>
       display: flex; align-items: center; justify-content: center;
       color: var(--muted); font-size: 13px; text-align: center; padding: 24px;
       z-index: 5;
+      pointer-events: none;
     }
 
     #credsheet {
@@ -141,28 +152,7 @@ export const MOBILE_HTML = `<!DOCTYPE html>
       cursor: pointer;
       touch-action: manipulation;
     }
-    .kbrow button:active { background: #21262d; }
-    .kbrow button.wide { flex: 3; }
-    .kbrow button.xwide { flex: 5; }
-    .kbrow button.accent { background: var(--accent); color: #fff; border-color: var(--accent); }
-    .kbrow button.danger { background: var(--danger); color: #fff; border-color: var(--danger); }
     .kbrow button.muted { color: var(--muted); }
-
-    #macros {
-      display: flex; gap: 4px; margin-bottom: 8px;
-      flex-wrap: wrap;
-    }
-    #macros button {
-      flex: 1; min-width: 70px;
-      padding: 10px 8px;
-      background: var(--bg);
-      color: var(--fg);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      font-size: 12px;
-      cursor: pointer;
-    }
-    #macros button:active { background: #21262d; }
   </style>
 </head>
 <body>
@@ -170,7 +160,8 @@ export const MOBILE_HTML = `<!DOCTYPE html>
   <div id="topbar">
     <span class="status" id="status"></span>
     <span class="label" id="statuslabel">connecting…</span>
-    <button id="credsbtn">Credentials</button>
+    <button id="credsbtn" class="primary">Login</button>
+    <button id="syncbtn" disabled>Sync</button>
     <button id="reloadbtn">↻</button>
   </div>
 
@@ -178,69 +169,10 @@ export const MOBILE_HTML = `<!DOCTYPE html>
     <div id="placeholder">Loading KasmVNC RFB client…</div>
   </div>
 
-  <div id="macros">
-    <button data-macro="esc">Esc</button>
-    <button data-macro="enter">Enter ⏎</button>
-    <button data-macro="tab">Tab</button>
-    <button data-macro="f2">F2 (Market Watch)</button>
-    <button data-macro="ctrl-m">Ctrl+M</button>
-    <button data-macro="ctrl-n">Ctrl+N (New Order)</button>
-    <button data-macro="ctrl-w">Ctrl+W (close)</button>
-  </div>
-
-  <div id="keyboard">
-    <div class="kbrow">
-      <button data-key="q">q</button>
-      <button data-key="w">w</button>
-      <button data-key="e">e</button>
-      <button data-key="r">r</button>
-      <button data-key="t">t</button>
-      <button data-key="y">y</button>
-      <button data-key="u">u</button>
-      <button data-key="i">i</button>
-      <button data-key="o">o</button>
-      <button data-key="p">p</button>
-    </div>
-    <div class="kbrow">
-      <button data-key="a">a</button>
-      <button data-key="s">s</button>
-      <button data-key="d">d</button>
-      <button data-key="f">f</button>
-      <button data-key="g">g</button>
-      <button data-key="h">h</button>
-      <button data-key="j">j</button>
-      <button data-key="k">k</button>
-      <button data-key="l">l</button>
-    </div>
-    <div class="kbrow">
-      <button data-key="shift" class="accent" style="flex: 1.5">⇧</button>
-      <button data-key="z">z</button>
-      <button data-key="x">x</button>
-      <button data-key="c">c</button>
-      <button data-key="v">v</button>
-      <button data-key="b">b</button>
-      <button data-key="n">n</button>
-      <button data-key="m">m</button>
-      <button data-key="." class="muted">.</button>
-      <button data-key="backspace" class="danger" style="flex: 1.5">⌫</button>
-    </div>
-    <div class="kbrow">
-      <button data-key="-" class="muted">-</button>
-      <button data-key="1">1</button>
-      <button data-key="2">2</button>
-      <button data-key="3">3</button>
-      <button data-key="4">4</button>
-      <button data-key="5">5</button>
-      <button data-key="6">6</button>
-      <button data-key="7">7</button>
-      <button data-key="8">8</button>
-      <button data-key="9">9</button>
-      <button data-key="0">0</button>
-    </div>
-    <div class="kbrow">
-      <button data-key="space" class="xwide muted">space</button>
-      <button data-key="enter" class="accent wide">enter ⏎</button>
-    </div>
+  <div id="keyboard" hidden>
+    <!-- Virtual keyboard removed: user scope is login-only.
+         After login, the only typing path is fillFromCreds() via rfb.sendKey,
+         which doesn't need an on-screen keyboard. -->
   </div>
 </div>
 
@@ -342,6 +274,13 @@ function connect() {
     setStatus('ok', 'connected to MT5');
     placeholder.style.display = 'none';
     fit();
+    // Auto-sync once on connect. SlotService.mq5 will emit an
+    // account_status event shortly after the MT5 desktop is up; this
+    // POST nudges the slot to re-validate even before that event
+    // arrives, so /v1/accounts reflects the live session quickly.
+    // It is a no-op if the connector is not running.
+    enableSyncButton();
+    triggerSync('auto');
   });
   rfb.addEventListener('disconnect', (e) => {
     const why = e && e.detail && e.detail.reason ? ': ' + e.detail.reason : '';
@@ -504,6 +443,32 @@ document.getElementById('credfill').addEventListener('click', () => {
   closeCreds();
   fillFromCreds();
 });
+
+// ── Sync button ──────────────────────────────────────────────
+// /internal/sync is a same-origin, no-JWT endpoint that re-validates
+// every active account via the slot connector (see src/api/internal.ts).
+// It is safe to call repeatedly - the slot de-duplicates in-process.
+const syncbtn = document.getElementById('syncbtn');
+function enableSyncButton() {
+  syncbtn.disabled = false;
+  syncbtn.textContent = 'Sync';
+  syncbtn.onclick = () => triggerSync('manual');
+}
+async function triggerSync(reason) {
+  syncbtn.disabled = true;
+  syncbtn.textContent = 'Syncing…';
+  try {
+    const r = await fetch('/internal/sync', { method: 'POST' });
+    const body = await r.json().catch(() => ({}));
+    const n = (body && body.accounts) ? body.accounts.length : 0;
+    setStatus('ok', 'synced ' + n + ' acct' + (n === 1 ? '' : 's') + ' (' + reason + ')');
+    setTimeout(() => { syncbtn.disabled = false; syncbtn.textContent = 'Sync'; }, 1200);
+  } catch (err) {
+    setStatus('err', 'sync failed: ' + (err && err.message || err));
+    syncbtn.disabled = false;
+    syncbtn.textContent = 'Sync';
+  }
+}
 document.getElementById('credform').addEventListener('submit', (e) => {
   e.preventDefault();
   creds = {
