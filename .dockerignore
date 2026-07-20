@@ -3,7 +3,7 @@
 .github
 node_modules
 dist
-!src/web/vnc-static/dist/
+!src/web/vnc-static/
 coverage
 *.log
 .env
