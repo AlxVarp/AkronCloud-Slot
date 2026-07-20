@@ -278,7 +278,10 @@ const credbtn     = document.getElementById('credsbtn');
 const reloadbtn   = document.getElementById('reloadbtn');
 
 const host = location.hostname;
-const wsUrl = 'ws://' + host + ':3000/';
+// KasmVNC's bundled noVNC client defaults to a '/websockify'
+// path for the WebSocket. nginx on :3000 has a matching
+// location /websockify → :6901 proxy.
+const wsUrl = 'ws://' + host + ':3000/websockify';
 
 let shift = false;
 const creds = loadCreds();
