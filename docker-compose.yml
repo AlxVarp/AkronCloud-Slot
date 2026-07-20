@@ -9,14 +9,14 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: ghcr.io/alxvarp/akroncloud-slot:0.3.0-tcp-bridge-v1
+    image: ghcr.io/alxvarp/akroncloud-slot:0.3.0-tcp-bridge-v2
     container_name: akroncloud-slot
     restart: unless-stopped
     env_file:
       - .env
     environment:
       # Phase C / Ruta B1 — direct TCP socket MQL5 ↔ slot.
-      # Set to 'file' to revert to the legacy ZMQ bridge.
+      # v2: MT5 connector also rewritten to TCP (was ZMQ).
       - SLOT_BRIDGE=tcp
     ports:
       - "0.0.0.0:7777:7777"   # Slot API (REST + WS)
