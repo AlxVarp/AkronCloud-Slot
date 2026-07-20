@@ -277,7 +277,14 @@ const credsheet   = document.getElementById('credsheet');
 const credbtn     = document.getElementById('credsbtn');
 const reloadbtn   = document.getElementById('reloadbtn');
 
-const host = location.hostname;
+const host = location.host;
+// location.host includes the port when it's non-default
+// (e.g. "45.151.122.104:7777"). Using location.hostname here would
+// drop the port and the browser would dial the WS default port
+// (80 / 443), which the slot does NOT listen on -> silent WS
+// failure with code 1006. This bug was hidden until we fixed the
+// RFB-constructor crash: before that, mobile.js never got far
+// enough to open the socket.
 // Same-origin WebSocket proxy in the slot (see mt5-ws-proxy.ts)
 // which pipes bytes to KasmVNC's :3000/websockify. Going to
 // :7777 keeps the WS upgrade inside the slot's port and avoids
@@ -320,7 +327,6 @@ function connect() {
     viewOnly: false,
     clipViewport: false,
     resizeSession: true,
-    showDotCursor: true,
     background: '#000',
     qualityLevel: 6,
     compressionLevel: 2,

@@ -510,11 +510,13 @@ export default class Keyboard {
         this._screenInput.addEventListener('keydown', this._eventHandlers.keydown);
         this._screenInput.addEventListener('keyup', this._eventHandlers.keyup);
 
-        this._touchInput.addEventListener('keydown', this._eventHandlers.keydown);
-        this._touchInput.addEventListener('keyup', this._eventHandlers.keyup);
-        this._touchInput.addEventListener('compositionstart', this._eventHandlers.compositionstart);
-        this._touchInput.addEventListener('compositionend', this._eventHandlers.compositionend);
-        this._touchInput.addEventListener('input', this._eventHandlers.input);
+        if (this._touchInput) {
+            this._touchInput.addEventListener('keydown', this._eventHandlers.keydown);
+            this._touchInput.addEventListener('keyup', this._eventHandlers.keyup);
+            this._touchInput.addEventListener('compositionstart', this._eventHandlers.compositionstart);
+            this._touchInput.addEventListener('compositionend', this._eventHandlers.compositionend);
+            this._touchInput.addEventListener('input', this._eventHandlers.input);
+        }
 
         // Release (key up) if window loses focus
         window.addEventListener('blur', this._eventHandlers.blur);
@@ -528,11 +530,13 @@ export default class Keyboard {
         this._screenInput.removeEventListener('keydown', this._eventHandlers.keydown);
         this._screenInput.removeEventListener('keyup', this._eventHandlers.keyup);
 
-        this._touchInput.removeEventListener('keydown', this._eventHandlers.keydown);
-        this._touchInput.removeEventListener('keyup', this._eventHandlers.keyup);
-        this._touchInput.removeEventListener('compositionstart', this._eventHandlers.compositionstart);
-        this._touchInput.removeEventListener('compositionend', this._eventHandlers.compositionend);
-        this._touchInput.removeEventListener('input', this._eventHandlers.input);
+        if (this._touchInput) {
+            this._touchInput.removeEventListener('keydown', this._eventHandlers.keydown);
+            this._touchInput.removeEventListener('keyup', this._eventHandlers.keyup);
+            this._touchInput.removeEventListener('compositionstart', this._eventHandlers.compositionstart);
+            this._touchInput.removeEventListener('compositionend', this._eventHandlers.compositionend);
+            this._touchInput.removeEventListener('input', this._eventHandlers.input);
+        }
 
         window.removeEventListener('blur', this._eventHandlers.blur);
 

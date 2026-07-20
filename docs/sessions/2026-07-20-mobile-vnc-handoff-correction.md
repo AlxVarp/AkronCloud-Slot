@@ -145,7 +145,85 @@ Then user reloads `http://45.151.122.104:7777/mobile`. Expected:
 - MT5 desktop renders in the canvas.
 - `fillFromCreds()` types broker login into MT5.
 
-## 7. Open follow-ups (unchanged)
+## 7. Round 2 (deployed v17) - WS URL bug + keyboard.ungrab crash
+
+After deploying v16, the user reported the next blocker from the
+browser console:
+
+```
+WebSocket connection to 'ws://45.151.122.104/mt5-ws' failed:
+rfb.js:1766 Failed when connecting: Connection closed (code: 1006)
+keyboard.js:531 Uncaught TypeError: Cannot read properties of null
+    (reading 'removeEventListener') at Keyboard.ungrab
+```
+
+### 7.1 Root cause #1: WS URL drops the port
+
+`src/web/mobile.html.ts` was building the WS URL from
+`location.hostname` which is just the host with no port. The slot
+listens on port 7777, but the browser then dialed `ws://host:80/...`
+(the WS default port for `ws://`), which nothing is listening on -
+hence silent failure with code 1006.
+
+This bug was **invisible in v15 and v16** because the RFB constructor
+crashed first and never reached the WS open step. Fixing the
+constructor exposed it.
+
+Fix:
+
+```diff
+-const host = location.hostname;
++const host = location.host;
+```
+
+`location.host` is `"hostname:port"` when the port is non-default
+(7777) and just `"hostname"` when it is default (80 / 443), so
+this works for both prod and local-dev.
+
+### 7.2 Root cause #2: Keyboard.ungrab on null touchInput
+
+The `null` we pass as touchInput (per fix 3.1) means
+`this._touchInput` is null. The bundled `Keyboard.ungrab` (line 525)
+calls `this._touchInput.removeEventListener(...)` unconditionally,
+which throws "Cannot read properties of null". Symmetrically
+`Keyboard.grab` has the same shape with `addEventListener`.
+
+Fix in `src/web/vnc-static/core/input/keyboard.js`:
+
+```diff
+ ungrab() {
+     ...
+-    this._touchInput.removeEventListener('keydown', ...);
+-    ...
++    if (this._touchInput) {
++        this._touchInput.removeEventListener('keydown', ...);
++        ...
++    }
+     window.removeEventListener('blur', ...);
+ }
+```
+
+Same shape applied to `grab()` (line 513).
+
+### 7.3 Cleanup: dropped deprecated `showDotCursor`
+
+`new RFB({showDotCursor: true})` triggers a deprecation warning
+in rfb.js:321. Removed from the options dict in
+`src/web/mobile.html.ts:324`. Functional behavior unchanged (KasmVNC
+shows the dot cursor by default when no remote cursor data arrives).
+
+## 8. Build + deploy status
+
+- Build: `npm run build` OK.
+- Image tag: `0.3.0-tcp-bridge-v17`.
+- Pushed: feature/phase-a-mt5-slot → merged to master via GitHub
+  API merges endpoint.
+- VPS: pulled master, `docker compose build` (5-10 min),
+  `docker compose down && docker compose up -d`. Container
+  `healthy`, `/v1/health` 200, `/mobile` 200, `/mt5-ws` upgrade
+  returns 101.
+
+## 9. Open follow-ups (unchanged)
 
 Same as earlier handoff §9 — Phase 4 cleanup, MT5 service broker
 login via API, `.env.example` SLOT_BRIDGE cleanup.
