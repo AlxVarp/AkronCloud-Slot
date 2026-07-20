@@ -154,21 +154,25 @@ export const MOBILE_HTML = `<!DOCTYPE html>
     }
     .kbrow button.muted { color: var(--muted); }
 
-    /* Compact keyboard (4 rows, ~28px tall) - gives the VNC canvas
-       ~120px more room than the original 5-row layout. */
+    /* Compact keyboard (4 rows) + safe-area bottom padding so the home
+       indicator of an iPhone notch doesn't overlap the last row.
+       min-height tightened from 28 -> 24px (saves ~16px). */
     #keyboard {
       flex-shrink: 0;
       background: var(--panel);
       border-top: 1px solid var(--border);
-      padding: 4px 4px 6px;
+      padding: 4px 4px max(6px, env(safe-area-inset-bottom));
       touch-action: manipulation;
       user-select: none;
+    }
+    #topbar {
+      padding-top: max(4px, env(safe-area-inset-top));
     }
     .kbrow { display: flex; gap: 3px; margin-bottom: 3px; }
     .kbrow button {
       flex: 1; min-width: 0;
-      padding: 6px 2px;
-      min-height: 28px;
+      padding: 4px 2px;
+      min-height: 24px;
       background: var(--bg);
       color: var(--fg);
       border: 1px solid var(--border);
