@@ -346,9 +346,7 @@ export const MOBILE_HTML = `<!DOCTYPE html>
       var zoomEl = document.getElementById('zoom');
       if (zoomEl) screen.appendChild(zoomEl);
 
-      rfb = new window.RFB({
-        target: canvas,
-        url: wsUrl,
+      rfb = new window.RFB(canvas, wsUrl, {
         repeaterID: 'akroncloud-mobile',
         public: false,
         viewOnly: false,
