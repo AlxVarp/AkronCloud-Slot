@@ -278,10 +278,14 @@ const credbtn     = document.getElementById('credsbtn');
 const reloadbtn   = document.getElementById('reloadbtn');
 
 const host = location.hostname;
-// KasmVNC's bundled noVNC client defaults to a '/websockify'
-// path for the WebSocket. nginx on :3000 has a matching
-// location /websockify → :6901 proxy.
-const wsUrl = 'ws://' + host + ':3000/websockify';
+// Same-origin WebSocket proxy in the slot (see mt5-ws-proxy.ts)
+// which pipes bytes to KasmVNC's :3000/websockify. Going to
+// :7777 keeps the WS upgrade inside the slot's port and avoids
+// firewall / port-isolation issues on mobile carriers.
+const wsUrl = 'wss://' + host + '/mt5-ws';
+// For local dev / non-TLS testing, also try ws:// (most browsers
+// will auto-upgrade ws:// on the same host).
+const wsUrlFallback = 'ws://' + host + '/mt5-ws';
 
 let shift = false;
 const creds = loadCreds();
@@ -302,7 +306,7 @@ function connect() {
   screen.innerHTML = '';
   screen.appendChild(canvas);
 
-  rfb = new RFB(canvas, wsUrl, {
+  rfb = new RFB(canvas, wsUrlFallback, {
     repeaterID: 'akroncloud-mobile',
     public: false,
     viewOnly: false,
