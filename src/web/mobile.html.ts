@@ -310,11 +310,11 @@ function connect() {
 
   // RFB creates its own canvas and wrapper <div> internally; we just give
   // it a container to attach them to. (Earlier we passed a manually-created
-  // canvas as the target, but RFB's connect path does
-  // `target.appendChild(internalScreenDiv)` which throws DOMException on a
-  // <canvas> element - the browser kills the WS within a couple of seconds
-  // and we never see a frame. Passing #screen lets the structure go where
-  // RFB expects it.)
+  // canvas as the target, but RFB's connect path does target.appendChild
+  // with an internal wrapper div, which throws DOMException on a <canvas>
+  // element - the browser kills the WS within a couple of seconds and we
+  // never see a frame. Passing #screen lets the structure go where RFB
+  // expects it.)
   screen.innerHTML = '';
 
   // KasmVNC fork of RFB has signature:
@@ -365,9 +365,8 @@ function fit() {
   const cw = canvas.width, ch = canvas.height;
   if (!cw || !ch) return;
   const z = Math.min(sw / cw, sh / ch);
-  canvas.style.transform = 'scale(' + z + ')';
   canvas.style.transformOrigin = '0 0';
-  canvas.style.transform = `translate(-50%, -50%) scale(${z})`;
+  canvas.style.transform = 'translate(-50%, -50%) scale(' + z + ')';
   canvas.style.position = 'absolute';
   canvas.style.left = '50%';
   canvas.style.top = '50%';
