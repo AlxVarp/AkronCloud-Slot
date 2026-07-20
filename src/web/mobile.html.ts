@@ -2,20 +2,19 @@
  * Mobile-friendly VNC wrapper for KasmVNC.
  *
  * Serves a single HTML page at /mobile that:
- *   1. Iframes KasmVNC's own noVNC client (served same-origin at
- *      /vnc-static/ — copied from /usr/local/share/kasmvnc/www at
- *      build time). The bundled client already knows how to talk
- *      to KasmVNC's WebSocket endpoint, so we don't need to reimplement
- *      the noVNC stack.
- *   2. Wraps it with a phone-friendly layout: virtual keyboard,
- *      macro buttons (Esc/Tab/Enter/F2/Ctrl+…), zoom controls.
- *   3. Auto-types broker credentials into the MT5 login dialog via
- *      `iframe.contentWindow.rfb.sendKey(...)`. Same-origin iframes
- *      give us direct access to the KasmVNC client's rfb instance.
- *   4. Stores credentials in localStorage for one-tap fill.
+ *   1. Loads KasmVNC's bundled `core/rfb.js` (served same-origin at
+ *      /vnc-static/core/rfb.js — copied from /usr/local/share/kasmvnc/www
+ *      at build time). This is the same RFB class the KasmVNC web
+ *      client uses; the difference is we instantiate it ourselves
+ *      instead of going through the AngularJS admin UI (which has
+ *      iframe-detection bugs).
+ *   2. Renders MT5 into a full-viewport canvas with pinch/scroll.
+ *   3. Provides a virtual QWERTY keyboard + macro buttons.
+ *   4. Stores broker credentials in localStorage for one-tap fill.
  *
- * The KasmVNC bundle is a webpack build that exposes `window.rfb`
- * once the WebSocket connection is up. We poll for that and use it.
+ * WebSocket URL: `ws://<host>:3000/` (KasmVNC's nginx forwards to
+ * the Xvnc websockify backend at :6901). The path '/websockify'
+ * does NOT work — KasmVNC serves the WebSocket at the root '/'.
  */
 
 export const MOBILE_HTML = `<!DOCTYPE html>
@@ -46,7 +45,6 @@ export const MOBILE_HTML = `<!DOCTYPE html>
     }
     #app { display: flex; flex-direction: column; height: 100dvh; height: 100vh; }
 
-    /* ─── top bar ─── */
     #topbar {
       display: flex; align-items: center; gap: 8px;
       padding: 8px 12px;
@@ -74,27 +72,22 @@ export const MOBILE_HTML = `<!DOCTYPE html>
     }
     #topbar button:active { background: #21262d; }
 
-    /* ─── VNC iframe ─── */
     #screen {
       flex: 1; min-height: 0;
       background: #000;
       position: relative;
-      overflow: hidden;
+      overflow: auto;
+      -webkit-overflow-scrolling: touch;
+      touch-action: pan-x pan-y;
     }
-    #screen iframe {
-      position: absolute; inset: 0;
-      width: 100%; height: 100%;
-      border: 0;
-      background: #000;
-    }
+    #screen canvas { display: block; transform-origin: 0 0; }
     #placeholder {
       position: absolute; inset: 0;
       display: flex; align-items: center; justify-content: center;
       color: var(--muted); font-size: 13px; text-align: center; padding: 24px;
-      z-index: 2; pointer-events: none;
+      z-index: 5;
     }
 
-    /* ─── credential sheet ─── */
     #credsheet {
       position: fixed; inset: 0; background: rgba(0,0,0,.7);
       display: none; align-items: center; justify-content: center;
@@ -127,7 +120,6 @@ export const MOBILE_HTML = `<!DOCTYPE html>
       border: 1px solid var(--border);
     }
 
-    /* ─── keyboard ─── */
     #keyboard {
       flex-shrink: 0;
       background: var(--panel);
@@ -183,8 +175,7 @@ export const MOBILE_HTML = `<!DOCTYPE html>
   </div>
 
   <div id="screen">
-    <div id="placeholder">Loading KasmVNC client…</div>
-    <iframe id="vnc" src="/vnc-static/"></iframe>
+    <div id="placeholder">Loading KasmVNC RFB client…</div>
   </div>
 
   <div id="macros">
@@ -275,216 +266,228 @@ export const MOBILE_HTML = `<!DOCTYPE html>
   </form>
 </div>
 
-<script>
-(function () {
-  'use strict';
+<script type="module">
+const { default: RFB } = await import('/vnc-static/core/rfb.js');
 
-  var statusDot   = document.getElementById('status');
-  var statusLabel = document.getElementById('statuslabel');
-  var screen      = document.getElementById('screen');
-  var placeholder = document.getElementById('placeholder');
-  var credsheet   = document.getElementById('credsheet');
-  var credbtn     = document.getElementById('credsbtn');
-  var reloadbtn   = document.getElementById('reloadbtn');
-  var vncFrame    = document.getElementById('vnc');
+const statusDot   = document.getElementById('status');
+const statusLabel = document.getElementById('statuslabel');
+const screen      = document.getElementById('screen');
+const placeholder = document.getElementById('placeholder');
+const credsheet   = document.getElementById('credsheet');
+const credbtn     = document.getElementById('credsbtn');
+const reloadbtn   = document.getElementById('reloadbtn');
 
-  var shift = false;
-  var creds = loadCreds();
-  var rfb = null;
+const host = location.hostname;
+const wsUrl = 'ws://' + host + ':3000/';
 
-  function setStatus(state, msg) {
-    statusDot.className = 'status' + (state === 'ok' ? ' ok' : state === 'err' ? ' err' : '');
-    statusLabel.textContent = msg;
+let shift = false;
+const creds = loadCreds();
+let rfb = null;
+
+function setStatus(state, msg) {
+  statusDot.className = 'status' + (state === 'ok' ? ' ok' : state === 'err' ? ' err' : '');
+  statusLabel.textContent = msg;
+}
+
+function connect() {
+  setStatus('', 'connecting to ' + wsUrl + '…');
+  placeholder.style.display = 'flex';
+  placeholder.textContent = 'Connecting to KasmVNC…';
+
+  const canvas = document.createElement('canvas');
+  canvas.style.display = 'block';
+  screen.innerHTML = '';
+  screen.appendChild(canvas);
+
+  rfb = new RFB(canvas, wsUrl, {
+    repeaterID: 'akroncloud-mobile',
+    public: false,
+    viewOnly: false,
+    clipViewport: false,
+    resizeSession: true,
+    showDotCursor: true,
+    background: '#000',
+    qualityLevel: 6,
+    compressionLevel: 2,
+  });
+  rfb.addEventListener('connect', () => {
+    setStatus('ok', 'connected to MT5');
+    placeholder.style.display = 'none';
+    fit();
+  });
+  rfb.addEventListener('disconnect', (e) => {
+    const why = e && e.detail && e.detail.reason ? ': ' + e.detail.reason : '';
+    setStatus('err', 'disconnected' + why);
+    placeholder.style.display = 'flex';
+    placeholder.textContent = 'Disconnected. Tap ↻ to retry.';
+  });
+  rfb.addEventListener('credentialsrequired', () => {
+    setStatus('', 'credentials required (server-side)');
+  });
+}
+
+function fit() {
+  if (!rfb) return;
+  const canvas = screen.querySelector('canvas');
+  if (!canvas) return;
+  const sw = screen.clientWidth, sh = screen.clientHeight;
+  const cw = canvas.width, ch = canvas.height;
+  if (!cw || !ch) return;
+  const z = Math.min(sw / cw, sh / ch);
+  canvas.style.transform = 'scale(' + z + ')';
+  canvas.style.transformOrigin = '0 0';
+}
+
+const XK = {
+  ' ': 0x20, '!': 0x21, '"': 0x22, '#': 0x23, '$': 0x24, '%': 0x25,
+  '&': 0x26, "'": 0x27, '(': 0x28, ')': 0x29, '*': 0x2A, '+': 0x2B,
+  ',': 0x2C, '-': 0x2D, '.': 0x2E, '/': 0x2F,
+  '0': 0x30, '1': 0x31, '2': 0x32, '3': 0x33, '4': 0x34,
+  '5': 0x35, '6': 0x36, '7': 0x37, '8': 0x38, '9': 0x39,
+  ':': 0x3A, ';': 0x3B, '<': 0x3C, '=': 0x3D, '>': 0x3E, '?': 0x3F,
+  '@': 0x40,
+  'a': 0x61, 'b': 0x62, 'c': 0x63, 'd': 0x64, 'e': 0x65, 'f': 0x66,
+  'g': 0x67, 'h': 0x68, 'i': 0x69, 'j': 0x6A, 'k': 0x6B, 'l': 0x6C,
+  'm': 0x6D, 'n': 0x6E, 'o': 0x6F, 'p': 0x70, 'q': 0x71, 'r': 0x72,
+  's': 0x73, 't': 0x74, 'u': 0x75, 'v': 0x76, 'w': 0x77, 'x': 0x78,
+  'y': 0x79, 'z': 0x7A,
+};
+const NAMED = {
+  'esc': 0xFF1B, 'tab': 0xFF09, 'enter': 0xFF0D, 'f2': 0xFFBE,
+  'BackSpace': 0xFF08, 'shift_L': 0xFFE1, 'Control_L': 0xFFE3,
+};
+
+function sendKey(keysym) {
+  if (!rfb) return;
+  try { rfb.sendKey(keysym, true); rfb.sendKey(keysym, false); } catch (e) {}
+}
+function sendChar(ch) {
+  var base = ch.toLowerCase();
+  var keysym = XK[base] || XK[ch] || ch.charCodeAt(0);
+  sendKey(keysym);
+}
+
+function pressKey(ch) {
+  if (ch === 'shift') {
+    shift = !shift;
+    document.querySelectorAll('[data-key="shift"]').forEach((b) => {
+      b.style.opacity = shift ? '1' : '0.6';
+    });
+    return;
   }
-
-  function tryBindRfb() {
-    try {
-      var w = vncFrame.contentWindow;
-      if (!w) return false;
-      if (w.rfb && typeof w.rfb.sendKey === 'function') {
-        rfb = w.rfb;
-        return true;
-      }
-    } catch (e) {}
-    return false;
+  if (ch === 'backspace') { sendKey(NAMED.BackSpace); shift = false; return; }
+  if (ch === 'enter')    { sendKey(NAMED.enter);                return; }
+  if (ch === 'space')    { sendKey(XK[' ']);                    return; }
+  if (ch === '-')        { sendChar('-');                       return; }
+  if (ch === '.')        { sendChar('.');                       return; }
+  const out = shift ? ch.toUpperCase() : ch;
+  sendChar(out);
+  if (shift) {
+    shift = false;
+    document.querySelectorAll('[data-key="shift"]').forEach((b) => {
+      b.style.opacity = '0.6';
+    });
   }
+}
 
-  function startPollingIframe() {
-    var tries = 0;
-    var t = setInterval(function () {
-      tries++;
-      if (tryBindRfb()) {
-        clearInterval(t);
-        setStatus('ok', 'connected (rfb ready)');
-        placeholder.style.display = 'none';
-      } else if (tries > 60) {
-        clearInterval(t);
-        setStatus('err', 'rfb instance not found');
+function sendMacro(macro) {
+  if (macro === 'esc' || macro === 'tab' || macro === 'enter' || macro === 'f2') {
+    sendKey(NAMED[macro]);
+    return;
+  }
+  if (macro.indexOf('ctrl-') === 0) {
+    const key = macro.slice(5);
+    sendKey(NAMED.Control_L);
+    sendKey(XK[key.toLowerCase()] || XK[key] || key.toUpperCase().charCodeAt(0));
+    sendKey(NAMED.Control_L);
+    return;
+  }
+}
+
+function loadCreds() {
+  try { return JSON.parse(localStorage.getItem('akron.creds.v1') || '{}'); }
+  catch (e) { return {}; }
+}
+function saveCreds() { localStorage.setItem('akron.creds.v1', JSON.stringify(creds)); }
+function openCreds() {
+  document.getElementById('f_server').value    = creds.server    || '';
+  document.getElementById('f_login').value     = creds.login     || '';
+  document.getElementById('f_password').value  = creds.password  || '';
+  document.getElementById('f_investor').value  = creds.investor  || '';
+  credsheet.classList.add('open');
+}
+function closeCreds() { credsheet.classList.remove('open'); }
+
+function fillFromCreds() {
+  if (!rfb) { setStatus('err', 'rfb not ready'); return; }
+  const fields = [
+    { value: creds.server,   allowShift: true },
+    { value: creds.login,    allowShift: true },
+    { value: creds.password, allowShift: true },
+  ];
+  if (creds.investor) fields.push({ value: creds.investor, allowShift: true });
+  let i = 0;
+  function next() {
+    if (i >= fields.length) {
+      setTimeout(() => sendKey(NAMED.enter), 200);
+      return;
+    }
+    const f = fields[i++];
+    if (!f.value) { next(); return; }
+    typeString(f.value, () => {
+      if (i < fields.length) {
+        setTimeout(() => { sendKey(NAMED.tab); next(); }, 150);
       } else {
-        setStatus('', 'connecting… (' + tries + ')');
+        next();
       }
-    }, 500);
+    });
   }
+  function typeString(s, done) {
+    const chars = s.split('');
+    let j = 0;
+    function tick() {
+      if (j >= chars.length) { done(); return; }
+      const c = chars[j++];
+      if (/[A-Z]/.test(c)) {
+        sendKey(NAMED.shift_L);
+      }
+      setTimeout(() => { pressKey(c.toLowerCase()); tick(); }, 35);
+    }
+    tick();
+  }
+  next();
+}
 
-  vncFrame.addEventListener('load', function () {
-    startPollingIframe();
-  });
-
-  var XK = {
-    ' ': 0x20, '!': 0x21, '"': 0x22, '#': 0x23, '$': 0x24, '%': 0x25,
-    '&': 0x26, "'": 0x27, '(': 0x28, ')': 0x29, '*': 0x2A, '+': 0x2B,
-    ',': 0x2C, '-': 0x2D, '.': 0x2E, '/': 0x2F,
-    '0': 0x30, '1': 0x31, '2': 0x32, '3': 0x33, '4': 0x34,
-    '5': 0x35, '6': 0x36, '7': 0x37, '8': 0x38, '9': 0x39,
-    ':': 0x3A, ';': 0x3B, '<': 0x3C, '=': 0x3D, '>': 0x3E, '?': 0x3F,
-    '@': 0x40,
-    'a': 0x61, 'b': 0x62, 'c': 0x63, 'd': 0x64, 'e': 0x65, 'f': 0x66,
-    'g': 0x67, 'h': 0x68, 'i': 0x69, 'j': 0x6A, 'k': 0x6B, 'l': 0x6C,
-    'm': 0x6D, 'n': 0x6E, 'o': 0x6F, 'p': 0x70, 'q': 0x71, 'r': 0x72,
-    's': 0x73, 't': 0x74, 'u': 0x75, 'v': 0x76, 'w': 0x77, 'x': 0x78,
-    'y': 0x79, 'z': 0x7A,
+document.querySelectorAll('[data-key]').forEach((b) => {
+  b.addEventListener('click', () => pressKey(b.dataset.key));
+});
+document.querySelectorAll('[data-macro]').forEach((b) => {
+  b.addEventListener('click', () => sendMacro(b.dataset.macro));
+});
+credbtn.addEventListener('click', openCreds);
+document.getElementById('credcancel').addEventListener('click', closeCreds);
+document.getElementById('credfill').addEventListener('click', () => {
+  closeCreds();
+  fillFromCreds();
+});
+document.getElementById('credform').addEventListener('submit', (e) => {
+  e.preventDefault();
+  creds = {
+    server:   document.getElementById('f_server').value,
+    login:    document.getElementById('f_login').value,
+    password: document.getElementById('f_password').value,
+    investor: document.getElementById('f_investor').value,
   };
-  var NAMED = {
-    'esc': 0xFF1B, 'tab': 0xFF09, 'enter': 0xFF0D, 'f2': 0xFFBE,
-    'BackSpace': 0xFF08, 'shift_L': 0xFFE1, 'Control_L': 0xFFE3,
-  };
+  saveCreds();
+  closeCreds();
+  fillFromCreds();
+});
+reloadbtn.addEventListener('click', () => {
+  if (rfb) { try { rfb.disconnect(); } catch(e) {} }
+  setTimeout(connect, 200);
+});
 
-  function sendKey(keysym) {
-    if (!rfb) return;
-    try {
-      rfb.sendKey(keysym, true);
-      rfb.sendKey(keysym, false);
-    } catch (e) {}
-  }
-  function sendChar(ch) {
-    var base = ch.toLowerCase();
-    var keysym = XK[base] || XK[ch] || ch.charCodeAt(0);
-    sendKey(keysym);
-  }
-
-  function pressKey(ch) {
-    if (ch === 'shift') {
-      shift = !shift;
-      document.querySelectorAll('[data-key="shift"]').forEach(function (b) {
-        b.style.opacity = shift ? '1' : '0.6';
-      });
-      return;
-    }
-    if (ch === 'backspace') { sendKey(NAMED.BackSpace); shift = false; return; }
-    if (ch === 'enter')    { sendKey(NAMED.enter);                return; }
-    if (ch === 'space')    { sendKey(XK[' ']);                    return; }
-    if (ch === '-')        { sendChar('-');                       return; }
-    if (ch === '.')        { sendChar('.');                       return; }
-    var out = shift ? ch.toUpperCase() : ch;
-    sendChar(out);
-    if (shift) {
-      shift = false;
-      document.querySelectorAll('[data-key="shift"]').forEach(function (b) {
-        b.style.opacity = '0.6';
-      });
-    }
-  }
-
-  function sendMacro(macro) {
-    if (macro === 'esc' || macro === 'tab' || macro === 'enter' || macro === 'f2') {
-      sendKey(NAMED[macro]);
-      return;
-    }
-    if (macro.indexOf('ctrl-') === 0) {
-      var key = macro.slice(5);
-      sendKey(NAMED.Control_L);
-      sendKey(XK[key.toLowerCase()] || XK[key] || key.toUpperCase().charCodeAt(0));
-      sendKey(NAMED.Control_L);
-      return;
-    }
-  }
-
-  function loadCreds() {
-    try { return JSON.parse(localStorage.getItem('akron.creds.v1') || '{}'); }
-    catch (e) { return {}; }
-  }
-  function saveCreds() { localStorage.setItem('akron.creds.v1', JSON.stringify(creds)); }
-  function openCreds() {
-    document.getElementById('f_server').value    = creds.server    || '';
-    document.getElementById('f_login').value     = creds.login     || '';
-    document.getElementById('f_password').value  = creds.password  || '';
-    document.getElementById('f_investor').value  = creds.investor  || '';
-    credsheet.classList.add('open');
-  }
-  function closeCreds() { credsheet.classList.remove('open'); }
-  function fillFromCreds() {
-    if (!rfb) { setStatus('err', 'rfb not ready'); return; }
-    var fields = [
-      { value: creds.server,   allowShift: true },
-      { value: creds.login,    allowShift: true },
-      { value: creds.password, allowShift: true },
-    ];
-    if (creds.investor) fields.push({ value: creds.investor, allowShift: true });
-    var i = 0;
-    function next() {
-      if (i >= fields.length) {
-        setTimeout(function () { sendKey(NAMED.enter); }, 200);
-        return;
-      }
-      var f = fields[i++];
-      if (!f.value) { next(); return; }
-      typeString(f.value, function () {
-        if (i < fields.length) {
-          setTimeout(function () { sendKey(NAMED.tab); next(); }, 150);
-        } else {
-          next();
-        }
-      });
-    }
-    function typeString(s, done) {
-      var chars = s.split('');
-      var j = 0;
-      function tick() {
-        if (j >= chars.length) { done(); return; }
-        var c = chars[j++];
-        if (/[A-Z]/.test(c)) {
-          sendKey(NAMED.shift_L);
-        }
-        setTimeout(function () { pressKey(c.toLowerCase()); tick(); }, 35);
-      }
-      tick();
-    }
-    next();
-  }
-
-  document.querySelectorAll('[data-key]').forEach(function (b) {
-    b.addEventListener('click', function () { pressKey(b.dataset.key); });
-  });
-  document.querySelectorAll('[data-macro]').forEach(function (b) {
-    b.addEventListener('click', function () { sendMacro(b.dataset.macro); });
-  });
-  credbtn.addEventListener('click', openCreds);
-  document.getElementById('credcancel').addEventListener('click', closeCreds);
-  document.getElementById('credfill').addEventListener('click', function () {
-    closeCreds();
-    fillFromCreds();
-  });
-  document.getElementById('credform').addEventListener('submit', function (e) {
-    e.preventDefault();
-    creds = {
-      server:   document.getElementById('f_server').value,
-      login:    document.getElementById('f_login').value,
-      password: document.getElementById('f_password').value,
-      investor: document.getElementById('f_investor').value,
-    };
-    saveCreds();
-    closeCreds();
-    fillFromCreds();
-  });
-  reloadbtn.addEventListener('click', function () {
-    try { vncFrame.contentWindow.location.reload(); }
-    catch (e) { vncFrame.src = vncFrame.src; }
-  });
-
-  setTimeout(function () {
-    if (!rfb) setStatus('', 'waiting for MT5…');
-  }, 5000);
-})();
+connect();
 </script>
 </body>
 </html>`;
