@@ -306,7 +306,15 @@ function connect() {
   screen.innerHTML = '';
   screen.appendChild(canvas);
 
-  rfb = new RFB(canvas, wsUrlFallback, {
+  // KasmVNC fork of RFB has signature:
+  //   constructor(target, touchInput, urlOrChannel, options, isPrimaryDisplay)
+  // The URL must be the 3rd positional arg, not the 2nd. Passing the URL
+  // as touchInput caused Keyboard._keyboardInputReset to assign \`.value\`
+  // on the string and crash with:
+  //   "Cannot create property 'value' on string 'ws://45.151.122.104/mt5-ws'"
+  // We pass null for touchInput (the wrapper has its own creds modal that
+  // types via rfb.sendKey; no IME on the MT5 canvas itself).
+  rfb = new RFB(canvas, null, wsUrlFallback, {
     repeaterID: 'akroncloud-mobile',
     public: false,
     viewOnly: false,
