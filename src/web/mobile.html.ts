@@ -308,29 +308,36 @@ function connect() {
   placeholder.style.display = 'flex';
   placeholder.textContent = 'Connecting to KasmVNC…';
 
-  const canvas = document.createElement('canvas');
-  canvas.style.display = 'block';
+  // RFB creates its own canvas and wrapper <div> internally; we just give
+  // it a container to attach them to. (Earlier we passed a manually-created
+  // canvas as the target, but RFB's connect path does
+  // `target.appendChild(internalScreenDiv)` which throws DOMException on a
+  // <canvas> element - the browser kills the WS within a couple of seconds
+  // and we never see a frame. Passing #screen lets the structure go where
+  // RFB expects it.)
   screen.innerHTML = '';
-  screen.appendChild(canvas);
 
   // KasmVNC fork of RFB has signature:
   //   constructor(target, touchInput, urlOrChannel, options, isPrimaryDisplay)
   // The URL must be the 3rd positional arg, not the 2nd. Passing the URL
-  // as touchInput caused Keyboard._keyboardInputReset to assign \`.value\`
-  // on the string and crash with:
-  //   "Cannot create property 'value' on string 'ws://45.151.122.104/mt5-ws'"
+  // as touchInput caused Keyboard._keyboardInputReset to assign .value on
+  // the string and crash with:
+  //   TypeError: Cannot create property value on string ws://45.151.122.104/mt5-ws
   // We pass null for touchInput (the wrapper has its own creds modal that
   // types via rfb.sendKey; no IME on the MT5 canvas itself).
-  rfb = new RFB(canvas, null, wsUrlFallback, {
-    repeaterID: 'akroncloud-mobile',
-    public: false,
-    viewOnly: false,
-    clipViewport: false,
-    resizeSession: true,
+  // 5th positional arg: isPrimaryDisplay = true (was implicit; explicit for clarity).
+  rfb = new RFB(screen, null, wsUrlFallback, {
     background: '#000',
-    qualityLevel: 6,
-    compressionLevel: 2,
-  });
+  }, true);
+
+  // Apply KasmVNC defaults that match the bundled UI. resizeSession,
+  // clipViewport, qualityLevel, etc. are not read from the options
+  // object - they're properties set after construction.
+  rfb.resizeSession = true;          // Match Xvnc -geometry 1024x768 client-side
+  rfb.scaleViewport = true;          // CSS scale the canvas to fit #screen
+  rfb.clipViewport = true;           // Don't draw outside #screen
+  rfb.qualityLevel = 6;
+  rfb.compressionLevel = 2;
   rfb.addEventListener('connect', () => {
     setStatus('ok', 'connected to MT5');
     placeholder.style.display = 'none';
@@ -349,6 +356,9 @@ function connect() {
 
 function fit() {
   if (!rfb) return;
+  // RFB owns its own canvas now (it lives inside rfb._screen which is
+  // appended to our #screen div). Use its natural dimensions (set by RFB
+  // to match the desktop) and CSS-scale to fit.
   const canvas = screen.querySelector('canvas');
   if (!canvas) return;
   const sw = screen.clientWidth, sh = screen.clientHeight;
@@ -357,6 +367,10 @@ function fit() {
   const z = Math.min(sw / cw, sh / ch);
   canvas.style.transform = 'scale(' + z + ')';
   canvas.style.transformOrigin = '0 0';
+  canvas.style.transform = `translate(-50%, -50%) scale(${z})`;
+  canvas.style.position = 'absolute';
+  canvas.style.left = '50%';
+  canvas.style.top = '50%';
 }
 
 const XK = {
