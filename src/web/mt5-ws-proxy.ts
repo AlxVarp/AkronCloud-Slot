@@ -33,7 +33,22 @@ export async function registerMt5WsProxy(app: FastifyInstance): Promise<void> {
       // Spawn the upstream WS to KasmVNC. Same path KasmVNC's
       // bundled noVNC uses.
       const upstreamUrl = 'ws://127.0.0.1:3000/websockify';
-      const upstream = new WebSocket(upstreamUrl, ['binary']);
+      // KasmVNC's websockify (at :3000 -> nginx -> :6901 Xvnc) rejects
+      // the upgrade with 404 when the request has no Origin header:
+      //   "missing Sec-WebSocket-Origin header"
+      // Browsers send Origin automatically; the slot's server-side WS
+      // does not. Forward the client's Origin (falling back to the Host
+      // header or a localhost default) so the upstream accepts the
+      // upgrade.
+      const clientOrigin =
+        (req.headers.origin as string | undefined) ??
+        (req.headers.host ? `http://${req.headers.host}` : 'http://localhost');
+      const upstream = new WebSocket(upstreamUrl, ['binary'], {
+        headers: {
+          Origin: clientOrigin,
+          'Sec-WebSocket-Origin': clientOrigin,
+        },
+      });
 
       let clientOpen = true;
       let upstreamOpen = false;

@@ -27,4 +27,16 @@ export async function registerMobileRoutes(app: FastifyInstance): Promise<void> 
       .header('Cache-Control', 'no-cache, no-store, must-revalidate')
       .send(MOBILE_HTML);
   });
+  // 1x1 transparent PNG. Browsers auto-request /favicon.ico on every
+  // page load; without this we get a noisy 404 in the console.
+  const TRANSPARENT_PNG = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+    'base64',
+  );
+  app.get('/favicon.ico', async (_req, reply) => {
+    reply
+      .type('image/png')
+      .header('Cache-Control', 'public, max-age=86400')
+      .send(TRANSPARENT_PNG);
+  });
 }
