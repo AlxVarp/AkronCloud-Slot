@@ -305,9 +305,9 @@ export const MOBILE_HTML = `<!DOCTYPE html>
   var creds = loadCreds();
 
   var host = location.hostname;
-  // KasmVNC's Xvnc WebSocket lives at the nginx root path '/' on
+  // KasmVNC's Xvnc WebSocket lives at the nginx root path / on
   // port 3000 (forwarded by nginx from KasmVNC's own :6901). The
-  // legacy `/websockify` alias is NOT registered in this image,
+  // legacy /websockify alias is NOT registered in this image,
   // so we point noVNC at the root.
   var wsUrl = 'ws://' + host + ':3000/';
 
