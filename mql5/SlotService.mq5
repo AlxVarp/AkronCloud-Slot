@@ -79,6 +79,7 @@ datetime g_lastCmdMtime       = 0;
 int    g_cmdSock     = INVALID_SOCKET;
 string g_recvBuf     = "";
 int    g_lastWSAErr  = 0;
+bool   g_lastConnected = false;
 
 int OnStart()
 {
@@ -145,6 +146,27 @@ void OnTimer()
       SendFrame("{\"type\":\"event\",\"kind\":\"state\",\"ts\":"
                 + TimeToMs(TimeCurrent()) + ",\"data\":"
                 + BuildStateJson() + "}");
+
+      // Detect broker connection state change. Emits account_status
+      // so the slot's connector can flip `loggedIn` for the right
+      // account. Fires on every transition (login/logout/connect-loss)
+      // and on the first tick after MT5 boot (initial state).
+      bool connected = (bool)TerminalInfoInteger(TERMINAL_CONNECTED);
+      if(connected != g_lastConnected) {
+         g_lastConnected = connected;
+         SendFrame("{\"type\":\"event\",\"kind\":\"account\","
+                   "\"data\":{\"logged_in\":"
+                   + (connected ? "true" : "false")
+                   + ",\"login\":\""
+                   + IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN))
+                   + "\",\"server\":\""
+                   + JsonEscape(AccountInfoString(ACCOUNT_SERVER))
+                   + "\",\"balance\":"
+                   + DoubleToString(AccountInfoDouble(ACCOUNT_BALANCE), 2)
+                   + ",\"equity\":"
+                   + DoubleToString(AccountInfoDouble(ACCOUNT_EQUITY), 2)
+                   + "}}");
+      }
    }
 }
 

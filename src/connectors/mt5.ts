@@ -1,8 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { Publisher, Subscriber, type Message } from 'zeromq';
-import { z } from 'zod';
 import { log } from '../log.js';
 import type {
   AccountState,
@@ -21,95 +19,52 @@ import type {
 import type { AccountRow } from '../db/index.js';
 import type { Database as DB } from 'better-sqlite3';
 import type { Ledger } from '../ledger.js';
+import type { Mt5TcpServer } from '../services/mt5-tcp-server.js';
+import type { ParsedEvent } from '../services/mt5-tcp-server.js';
 
 /**
- * MT5 broker connector (Phase B).
+ * MT5 broker connector (Phase C).
  *
- * Talks to the embedded MT5 terminal inside the same container
- * via the ZMQ pair documented in SPEC § 4.4:
+ * Talks to the embedded MT5 terminal via the Phase C TCP bridge
+ * (`services/mt5-tcp-server.ts`). MQL5 side is `SlotService.mq5`
+ * compiled as a `#property service`. No chart-attached EAs, no ZMQ.
  *
- *   - **Inbound** (`tcp://127.0.0.1:5557` by default — see
- *     `SLOT_MT5_ZMQ_IN_URL`): the embedded `PublisherZMQEvents.ex5`
- *     publishes fills, order_state changes and account_status to a
- *     ZMQ PUB socket. We SUB and route by `account_login`.
+ * Wire protocol: newline-delimited JSON over `127.0.0.1:7778`. See
+ * `docs/plans/PHASE_C_RTA_B1_TCP_SOCKET.md` §2 for the full spec.
  *
- *   - **Outbound** (`tcp://127.0.0.1:5556` by default — see
- *     `SLOT_MT5_ZMQ_OUT_URL`): we PUB trade commands (login,
- *     place_order, close_position) to be picked up by a future
- *     `SlotCommandEA.mq5` EA that lives on the MT5 chart. That EA
- *     does not exist yet; for the time being outbound messages are
- *     silently dropped by ZMQ (no subscribers) and the connector
- *     synthesises an immediate `broker_order_id` for `openTrade`
- *     without waiting for a fill. The fill pipeline still works:
- *     when the user logs into MT5 via the KasmVNC iframe in
- *     `GET /connect` and trades manually, those fills arrive on
- *     the inbound socket and are persisted + streamed.
+ *   - Outbound commands (login/place_order/close_position) →
+ *     `tcp.dispatchCommand({type:"command", action, payload})` →
+ *     returns the MQL5 handler's JSON result.
  *
- * Architecture: one `Mt5Connector` per slot (singleton via the
- * factory in `index.ts`). It holds per-account state in a Map
- * keyed by the deterministic `accountRef = "mt5-<server>-<login>"`.
+ *   - Inbound events (fills/order_state/account) ←
+ *     `tcp.onEvent` callback → forwarded to the per-account bus
+ *     for `stream()` consumers.
+ *
+ * Architecture: one `Mt5Connector` per slot. Holds per-account
+ * state in a Map keyed by `accountRef = "mt5-<server>-<login>"`.
  * Multiple accounts can be connected concurrently; each `stream()`
  * call filters events for the requested account.
  *
  * State-of-the-world sources:
- *   - inbound fills come from ZMQ and are persisted to the ledger
- *     by `services/mt5-zmq.ts` (started unconditionally in app.ts)
- *   - this connector runs its OWN additional ZMQ subscriber to
- *     feed its per-account event bus for `stream()`. The duplicate
- *     subscription is intentional: the global one owns persistence,
- *     this one owns fan-out. They're cheap and decoupled.
- *   - `positions()` derives from the ledger (`ledger.positionsFor`)
+ *   - inbound fills come from the TCP server and are persisted to
+ *     the ledger by `services/mt5-tcp-server.ts` (which also owns
+ *     the on-event callback registration).
+ *   - positions() derives from the ledger (`ledger.positionsFor`)
  *     so it is always consistent with what's been filled.
+ *   - state() reads from a local cache updated by the TCP server's
+ *     account_status events (sent by MQL5 when
+ *     `TerminalInfoInteger(TERMINAL_CONNECTED)` flips).
  */
 
-const IN_URL = process.env.SLOT_MT5_ZMQ_IN_URL ?? 'tcp://127.0.0.1:5557';
-const OUT_URL = process.env.SLOT_MT5_ZMQ_OUT_URL ?? 'tcp://127.0.0.1:5556';
-const RECONNECT_DELAY_MS = 3_000;
 const LOGIN_TIMEOUT_MS = 15_000;
-
-const FillEvent = z.object({
-  type: z.literal('fill'),
-  account_login: z.union([z.string(), z.number()]).optional(),
-  data: z.object({
-    broker_order_id: z.string().optional(),
-    symbol: z.string(),
-    qty: z.number(),
-    price: z.number(),
-    fee: z.number().optional(),
-    ts: z.number().optional(),
-    side: z.enum(['buy', 'sell']).optional(),
-  }),
-});
-const OrderStateEvent = z.object({
-  type: z.literal('order_state'),
-  account_login: z.union([z.string(), z.number()]).optional(),
-  data: z.object({
-    broker_order_id: z.string(),
-    status: z.string(),
-  }),
-});
-const AccountStatusEvent = z.object({
-  type: z.literal('account_status'),
-  account_login: z.union([z.string(), z.number()]).optional(),
-  data: z.object({
-    logged_in: z.boolean().optional(),
-    balance: z.number().optional(),
-    equity: z.number().optional(),
-    last_error: z.string().optional(),
-  }),
-});
-const AnyEvent = z.union([FillEvent, OrderStateEvent, AccountStatusEvent]);
-type ParsedEvent = z.infer<typeof AnyEvent>;
 
 export type Mt5ConnectorOpts = {
   /** DB handle (used only to resolve broker_login → account_id for positions()). */
   db: DB;
   /** Ledger (used for positions()). */
   ledger: Ledger;
-  /** Override inbound URL (mostly for tests). */
-  inUrl?: string;
-  /** Override outbound URL (mostly for tests). */
-  outUrl?: string;
+  /** Phase C TCP server (replaces ZMQ PUB/SUB). */
+  tcp: Mt5TcpServer;
 };
 
 type AccountRecord = {
@@ -132,25 +87,23 @@ export class Mt5Connector implements BrokerConnector {
 
   private readonly accounts = new Map<string, AccountRecord>();
   private readonly bus = new EventEmitter();
-  private readonly pub: Publisher;
-  private readonly inUrl: string;
-  private readonly outUrl: string;
   private readonly db: DB;
   private readonly ledger: Ledger;
-
-  private stopped = false;
-  private reconnectTimer: NodeJS.Timeout | null = null;
-  private sub: Subscriber | null = null;
+  private readonly tcp: Mt5TcpServer;
 
   constructor(opts: Mt5ConnectorOpts) {
-    this.inUrl = opts.inUrl ?? IN_URL;
-    this.outUrl = opts.outUrl ?? OUT_URL;
     this.db = opts.db;
     this.ledger = opts.ledger;
-    this.pub = new Publisher();
+    this.tcp = opts.tcp;
     this.bus.setMaxListeners(0);
-    void this.startOutbound();
-    void this.startInbound();
+
+    // Wire into the TCP server's event stream. The TCP server already
+    // dispatches fills to the ledger; we only need per-account
+    // fan-out for stream() consumers.
+    this.tcp.onEvent = (evt: ParsedEvent, _account: AccountRow | undefined) => {
+      this.handleEvent(evt);
+    };
+    log.info({ url: 'tcp://127.0.0.1:7778' }, 'mt5 connector bound to TCP bridge');
   }
 
   // ────────────────────── lifecycle ──────────────────────
@@ -169,41 +122,31 @@ export class Mt5Connector implements BrokerConnector {
 
     log.info(
       { ref, server: creds.server, login: creds.login },
-      'mt5 connect: requesting broker login',
+      'mt5 connect: requesting broker login via TCP',
     );
 
-    // Publish the login command. If no MQL5 subscriber EA is
-    // attached yet this is dropped silently — the user is expected
-    // to also have logged into MT5 via the KasmVNC form, in which
-    // case the account_status event from PublisherZMQEvents will
-    // arrive on the inbound socket and flip `loggedIn` below.
-    try {
-      await this.pub.send(
-        JSON.stringify({
-          type: 'login',
-          server: creds.server,
-          login: creds.login,
-          password: creds.password,
-          ts: Date.now(),
-        }),
-      );
-    } catch (e) {
-      log.warn(
-        { ref, err: (e as Error).message },
-        'mt5 outbound publish failed (no subscriber?)',
-      );
-    }
+    // Notify MQL5 that this slot wants to track this account. MQL5
+    // doesn't actually do the login (the user does it via KasmVNC),
+    // but having the server/login in scope lets MQL5 emit the right
+    // account_status events when the connection state flips. The
+    // command may fail with `mt5_disconnected` if the TCP server
+    // isn't up yet; that's fine — we just wait for the event.
+    this.tcp.dispatchCommand({
+      type: 'command',
+      action: 'login',
+      payload: { server: creds.server, login: creds.login },
+    }).catch(() => { /* server may be down; the account_status event still wins */ });
 
-    // Emit a synthetic account=login event optimistically; the
-    // real account_status from MT5 (if it arrives) will overwrite.
+    // Emit a synthetic account=login event optimistically; the real
+    // account_status from MQL5 (if/when it arrives) will overwrite.
     const evt: AccountEvent = { kind: 'login' };
     this.emitToBus({ kind: 'account', data: evt }, ref);
 
     // Best-effort: wait briefly for an account_status event that
     // confirms the real login. If it doesn't arrive (e.g. the user
     // hasn't logged into MT5 yet via VNC) we still return the ref so
-    // the rest of the slot can address this account; the login
-    // detector + account_status events will flip the state later.
+    // the rest of the slot can address this account; the TCP event
+    // stream + login detector will flip the state later.
     const start = Date.now();
     while (Date.now() - start < LOGIN_TIMEOUT_MS) {
       if (rec.loggedIn) break;
@@ -223,18 +166,15 @@ export class Mt5Connector implements BrokerConnector {
     if (!rec) return;
     this.accounts.delete(accountRef);
     try {
-      await this.pub.send(
-        JSON.stringify({
-          type: 'logout',
-          server: rec.broker_server,
-          login: rec.broker_login,
-          ts: Date.now(),
-        }),
-      );
+      await this.tcp.dispatchCommand({
+        type: 'command',
+        action: 'logout',
+        payload: { server: rec.broker_server, login: rec.broker_login },
+      });
     } catch (e) {
       log.warn(
         { accountRef, err: (e as Error).message },
-        'mt5 outbound publish failed during disconnect',
+        'mt5 disconnect: TCP dispatch failed',
       );
     }
     this.emitToBus(
@@ -244,23 +184,10 @@ export class Mt5Connector implements BrokerConnector {
   }
 
   async stop(): Promise<void> {
-    this.stopped = true;
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
-    if (this.sub) {
-      try {
-        await this.sub.close();
-      } catch {
-        /* ignore */
-      }
-    }
-    try {
-      await this.pub.close();
-    } catch {
-      /* ignore */
-    }
+    // The TCP server is owned by app.ts and stopped there; we just
+    // detach our onEvent callback so it doesn't fire into a closed
+    // connector.
+    this.tcp.onEvent = undefined;
   }
 
   // ────────────────────── queries ──────────────────────
@@ -284,8 +211,8 @@ export class Mt5Connector implements BrokerConnector {
   }
 
   async symbols(_accountRef: string): Promise<SymbolSpec[]> {
-    // v0: hardcoded EURUSD. Phase B-real will pull Symbols from MT5
-    // via SymbolsTotal()/SymbolSelect()/SymbolInfoDouble().
+    // v0: hardcoded EURUSD. Phase C-real: dispatchCommand({action:"symbols"})
+    // returning SymbolInfo* results from MQL5. Deferred — same as Phase B.
     return [
       {
         symbol: 'EURUSD',
@@ -299,8 +226,8 @@ export class Mt5Connector implements BrokerConnector {
   }
 
   async quote(_accountRef: string, symbol: string): Promise<Quote> {
-    // v0: synthetic bid/ask. Phase B-real will read SymbolInfoDouble
-    // on the MT5 side and emit a quote event on the inbound ZMQ.
+    // v0: synthetic bid/ask. Phase C-real: dispatchCommand({action:"quote"})
+    // returning SymbolInfoDouble(MODE_BID/ASK) from MQL5. Deferred.
     return {
       symbol,
       bid: 1.0832,
@@ -312,9 +239,6 @@ export class Mt5Connector implements BrokerConnector {
   async positions(accountRef: string): Promise<Position[]> {
     const row = this.lookupAccountRow(accountRef);
     if (!row) return [];
-    // The ledger is the source of truth for what we know has been
-    // filled. Map ledger.Position (subset) → connector.Position
-    // (adds id + account_id, optional mark/unrealized).
     const positions = this.ledger.positionsFor(row.id);
     return positions.map((p, idx) => ({
       id: `pos-${row.id}-${p.instrument}-${idx}`,
@@ -336,44 +260,49 @@ export class Mt5Connector implements BrokerConnector {
     }
     const clientOrderId = randomUUID();
     try {
-      await this.pub.send(
-        JSON.stringify({
-          type: 'place_order',
-          client_order_id: clientOrderId,
-          server: rec.broker_server,
-          login: rec.broker_login,
+      const r = await this.tcp.dispatchCommand({
+        type: 'command',
+        action: 'open',
+        id: clientOrderId,
+        payload: {
+          account_id: rec.broker_login,
           instrument: order.instrument,
           side: order.side,
           qty: order.qty,
-          order_type: order.type,
+          type: order.type,
           price: order.price,
           sl: order.sl,
           tp: order.tp,
-          ts: Date.now(),
-        }),
+        },
+      });
+      if (!r.ok) {
+        return { ok: false, reason: r.error ?? 'unknown_error' };
+      }
+      // The MQL5 handler returns {order_id, broker_order_id} or
+      // {error, retcode}. Both come back as the result object.
+      const result = r.result as { order_id?: string; broker_order_id?: string }
+        | undefined;
+      const brokerOrderId = result?.broker_order_id
+        ?? result?.order_id
+        ?? `pending-${clientOrderId}`;
+      this.emitToBus(
+        {
+          kind: 'order_state',
+          data: { order_id: brokerOrderId, status: 'pending' as OrderStatus },
+        },
+        accountRef,
       );
+      return {
+        ok: true,
+        order_id: result?.order_id ?? clientOrderId,
+        broker_order_id: brokerOrderId,
+      };
     } catch (e) {
       return {
         ok: false,
-        reason: `outbound publish failed: ${(e as Error).message}`,
+        reason: `TCP dispatch failed: ${(e as Error).message}`,
       };
     }
-    // v0: synthesise a broker_order_id. If a SlotCommandEA is
-    // eventually attached it should include the real broker_order_id
-    // in its ack (order_state event). For now, the user is expected
-    // to place orders manually in MT5; this just queues the intent.
-    const brokerOrderId = `pending-${clientOrderId}`;
-    this.emitToBus(
-      {
-        kind: 'order_state',
-        data: {
-          order_id: brokerOrderId,
-          status: 'pending' satisfies OrderStatus,
-        },
-      },
-      accountRef,
-    );
-    return { ok: true, order_id: clientOrderId, broker_order_id: brokerOrderId };
   }
 
   async closeTrade(
@@ -387,35 +316,42 @@ export class Mt5Connector implements BrokerConnector {
     }
     const clientOrderId = randomUUID();
     try {
-      await this.pub.send(
-        JSON.stringify({
-          type: 'close_position',
-          client_order_id: clientOrderId,
-          server: rec.broker_server,
-          login: rec.broker_login,
+      const r = await this.tcp.dispatchCommand({
+        type: 'command',
+        action: 'close',
+        id: clientOrderId,
+        payload: {
+          account_id: rec.broker_login,
           position_id: positionId,
           qty,
-          ts: Date.now(),
-        }),
+        },
+      });
+      if (!r.ok) {
+        return { ok: false, reason: r.error ?? 'unknown_error' };
+      }
+      const result = r.result as { closed_ticket?: string; broker_order_id?: string }
+        | undefined;
+      const brokerOrderId = result?.broker_order_id
+        ?? result?.closed_ticket
+        ?? `pending-${clientOrderId}`;
+      this.emitToBus(
+        {
+          kind: 'order_state',
+          data: { order_id: brokerOrderId, status: 'pending' as OrderStatus },
+        },
+        accountRef,
       );
+      return {
+        ok: true,
+        order_id: clientOrderId,
+        broker_order_id: brokerOrderId,
+      };
     } catch (e) {
       return {
         ok: false,
-        reason: `outbound publish failed: ${(e as Error).message}`,
+        reason: `TCP dispatch failed: ${(e as Error).message}`,
       };
     }
-    const brokerOrderId = `pending-${clientOrderId}`;
-    this.emitToBus(
-      {
-        kind: 'order_state',
-        data: {
-          order_id: brokerOrderId,
-          status: 'pending' satisfies OrderStatus,
-        },
-      },
-      accountRef,
-    );
-    return { ok: true, order_id: clientOrderId, broker_order_id: brokerOrderId };
   }
 
   // ────────────────────── stream ──────────────────────
@@ -478,130 +414,75 @@ export class Mt5Connector implements BrokerConnector {
 
   // ────────────────────── internals ──────────────────────
 
-  private async startOutbound(): Promise<void> {
-    try {
-      await this.pub.bind(this.outUrl);
-      log.info({ url: this.outUrl }, 'mt5 outbound publisher bound');
-    } catch (e) {
-      log.warn(
-        { url: this.outUrl, err: (e as Error).message },
-        'mt5 outbound bind failed (will retry on next send)',
-      );
-    }
-  }
-
-  private startInbound(): void {
-    setTimeout(() => {
-      void this.connectInbound();
-    }, 1_000);
-  }
-
-  private async connectInbound(): Promise<void> {
-    if (this.stopped) return;
-    try {
-      const sock = new Subscriber();
-      await sock.connect(this.inUrl);
-      await sock.subscribe('');
-      this.sub = sock;
-      log.info({ url: this.inUrl }, 'mt5 inbound subscriber connected');
-      void (async (): Promise<void> => {
-        while (!this.stopped) {
-          try {
-            const [msg] = (await sock.receive()) as [Message];
-            this.handleMessage(msg);
-          } catch (e) {
-            log.warn(
-              { err: (e as Error).message },
-              'mt5 inbound receive error, will reconnect',
-            );
-            break;
-          }
-        }
-      })();
-    } catch (e) {
-      log.warn(
-        { url: this.inUrl, err: (e as Error).message },
-        'mt5 inbound connect failed, will retry',
-      );
-      if (!this.stopped) {
-        this.reconnectTimer = setTimeout(() => {
-          this.reconnectTimer = null;
-          void this.connectInbound();
-        }, RECONNECT_DELAY_MS);
-      }
-    }
-  }
-
-  private handleMessage(raw: Message): void {
-    const buf = Array.isArray(raw) ? raw[0] : raw;
-    if (!buf) return;
-    const text = Buffer.isBuffer(buf) ? buf.toString('utf8') : String(buf);
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(text);
-    } catch {
+  private handleEvent(evt: ParsedEvent): void {
+    // Map TCP events to broker events, filtered by account_login.
+    // Phase C: TCP server's onEvent is called once per MQL5 frame.
+    // We resolve account_login → accountRef from the registered
+    // accounts (since #property service is single-account-per-slot,
+    // there's typically only one).
+    if (evt.kind === 'startup') {
+      log.info('mt5 TCP: MQL5 service reports startup');
       return;
     }
-    const result = AnyEvent.safeParse(parsed);
-    if (!result.success) {
-      const t =
-        (parsed as { type?: string } | null)?.type ?? 'unknown';
-      log.debug({ t }, 'mt5 inbound: ignoring event');
+    if (evt.kind !== 'fill'
+     && evt.kind !== 'order_state'
+     && evt.kind !== 'account') {
+      log.debug({ kind: evt.kind }, 'mt5 TCP: unhandled event');
       return;
     }
-    const evt = result.data;
-    const brokerLogin = String(evt.account_login ?? '');
-    if (!brokerLogin) {
-      log.debug({ evt }, 'mt5 inbound: missing account_login');
-      return;
-    }
-    const ref = this.findRefByLogin(brokerLogin);
+    // For Phase C we use a heuristic: pick the first registered
+    // accountRef. Phase C-real will route by account_login once the
+    // connector tracks multiple accounts.
+    const ref = this.firstRef();
     if (!ref) {
-      log.debug(
-        { brokerLogin, type: evt.type },
-        'mt5 inbound: unknown account',
-      );
+      log.debug({ kind: evt.kind, evt }, 'mt5 TCP: no account registered');
       return;
     }
     const rec = this.accounts.get(ref);
-    if (rec) this.applyEventToRecord(rec, evt);
-    this.forwardEventToBus(evt, ref);
-  }
 
-  private applyEventToRecord(rec: AccountRecord, evt: ParsedEvent): void {
-    if (evt.type === 'account_status') {
-      const d = evt.data;
-      if (typeof d.logged_in === 'boolean') rec.loggedIn = d.logged_in;
-      if (typeof d.balance === 'number') rec.balance = d.balance;
-      if (typeof d.equity === 'number') rec.equity = d.equity;
-      if (typeof d.last_error === 'string') rec.lastError = d.last_error;
-    }
-  }
-
-  private forwardEventToBus(evt: ParsedEvent, ref: string): void {
-    if (evt.type === 'fill') {
+    if (evt.kind === 'fill') {
       const fill: Fill = {
         broker_order_id: evt.data.broker_order_id ?? '',
         symbol: evt.data.symbol,
-        qty: evt.data.qty,
-        price: evt.data.price,
-        fee: evt.data.fee,
-        ts: evt.data.ts ?? Date.now(),
+        qty: evt.data.qty ?? evt.data.volume ?? 0,
+        price: evt.data.price ?? 0,
+        ts: evt.ts ?? Date.now(),
       };
       this.emitToBus({ kind: 'fill', data: fill }, ref);
-    } else if (evt.type === 'order_state') {
+      return;
+    }
+
+    if (evt.kind === 'order_state') {
       this.emitToBus(
         {
           kind: 'order_state',
           data: {
-            order_id: evt.data.broker_order_id,
+            order_id: evt.data.broker_order_id
+                   ?? evt.data.order_id
+                   ?? '',
             status: evt.data.status as OrderStatus,
           },
         },
         ref,
       );
-    } else if (evt.type === 'account_status') {
-      const d = evt.data;
+      return;
+    }
+
+    if (evt.kind === 'account') {
+      const d = evt.data as {
+        logged_in?: boolean;
+        login?: string | number;
+        server?: string;
+        balance?: number;
+        equity?: number;
+        last_error?: string;
+      };
+      if (rec) {
+        if (typeof d.logged_in === 'boolean') rec.loggedIn = d.logged_in;
+        if (typeof d.balance === 'number') rec.balance = d.balance;
+        if (typeof d.equity === 'number') rec.equity = d.equity;
+        if (typeof d.last_error === 'string') rec.lastError = d.last_error;
+      }
       if (typeof d.logged_in === 'boolean') {
         this.emitToBus(
           {
@@ -612,25 +493,21 @@ export class Mt5Connector implements BrokerConnector {
         );
       } else if (d.last_error) {
         this.emitToBus(
-          {
-            kind: 'account',
-            data: { kind: 'error', detail: d.last_error },
-          },
+          { kind: 'account', data: { kind: 'error', detail: d.last_error } },
           ref,
         );
       }
     }
   }
 
-  private emitToBus(e: BrokerEvent, ref: string): void {
-    this.bus.emit('event', e, ref);
+  private firstRef(): string | undefined {
+    const it = this.accounts.keys();
+    const n = it.next();
+    return n.done ? undefined : n.value;
   }
 
-  private findRefByLogin(brokerLogin: string): string | undefined {
-    for (const rec of this.accounts.values()) {
-      if (rec.broker_login === brokerLogin) return rec.ref;
-    }
-    return undefined;
+  private emitToBus(e: BrokerEvent, ref: string): void {
+    this.bus.emit('event', e, ref);
   }
 
   private lookupAccountRow(accountRef: string): AccountRow | undefined {
