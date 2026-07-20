@@ -103,7 +103,7 @@ function connectPage(opts: { bootstrapToken: string; tenantHint: string }): stri
 
   <div id="syncbar" style="margin: 0 0 20px; padding: 12px 16px; border: 1px solid #c9d1d9; border-radius: 8px; background: #f6f8fa; display: flex; gap: 12px; align-items: center;">
     <strong style="font-size: 13px;">Sync</strong>
-    <span class="hint" style="flex: 1;">Click after broker login: re-runs the validator and re-publishes the login command to ZMQ. If the slot's <code>PublisherZMQEvents.ex5</code> is attached, fills + account_status flow within seconds.</span>
+    <span class="hint" style="flex: 1;">Click after broker login: re-runs the validator and re-publishes the login command to MT5 over TCP. If the slot's <code>SlotService.mq5</code> is running as a #property service, fills + account_status flow within seconds.</span>
     <button type="button" id="sync_btn" style="background:#137333;">Sync</button>
     <button type="button" id="sync_state_btn" style="background:#6e7681;">Refresh state</button>
   </div>
@@ -137,7 +137,7 @@ function connectPage(opts: { bootstrapToken: string; tenantHint: string }): stri
   <div id="done" style="display:none">
     <div class="pane" id="done">
       <h2>Operational</h2>
-      <p>Slot is live. VNC has been closed. The MT5 session inside the container is now the source of truth for trades; the slot is bridging fills + order state into the local ledger via ZMQ. Use the REST API below.</p>
+      <p>Slot is live. VNC has been closed. The MT5 session inside the container is now the source of truth for trades; the slot is bridging fills + order state into the local ledger via TCP socket (127.0.0.1:7778). Use the REST API below.</p>
       <p class="hint">VNC is gone. Reopen this page anytime to see the curl examples below.</p>
       <pre class="examples"># mint a token (token expires in 1h)
 TOKEN=$(curl -s http://localhost:7777/v1/health &gt;/dev/null; curl -s http://localhost:7777/connect | grep -oE 'eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+' | head -1)
@@ -220,8 +220,8 @@ wscat -c "ws://localhost:7777/v1/stream?account_id=&lt;id&gt;" -H "Authorization
   setInterval(poll, 2000);
 
   // Sync button: POST /v1/sync to re-trigger the validator. The endpoint
-  // re-publishes the login command on the MT5 ZMQ outbound. If the
-  // PublisherZMQEvents.ex5 is attached to a chart, the slot starts
+  // re-publishes the login command to the MT5 service via TCP. If the
+  // SlotService.mq5 is running as a #property service, it emits
   // receiving account_status + fills within seconds.
   const syncBtn = document.getElementById('sync_btn');
   const syncStateBtn = document.getElementById('sync_state_btn');
@@ -401,10 +401,10 @@ export async function restRoutes(app: FastifyInstance) {
   // re-runs the validator for every account, which:
   //   1. re-decrypts the password
   //   2. calls connector.connect() → re-publishes the login command
-  //      to ZMQ outbound tcp://5556
+  //      to TCP socket 127.0.0.1:7778
   //   3. waits up to 15s for an inbound account_status event
   //
-  // If the PublisherZMQEvents.ex5 is attached to a chart, the slot
+  // If the SlotService.mq5 is running as a #property service, the slot
   // will start seeing account_status + fill events within seconds.
   // If it isn't, the call is a no-op (commands go nowhere, no fills
   // arrive) and the user gets a clear hint in the response.
@@ -434,7 +434,7 @@ export async function restRoutes(app: FastifyInstance) {
       hint:
         accounts.length === 0
           ? 'No accounts yet. POST /v1/accounts to provision one, or just hit Sync after a manual MT5 login (it will create one on the next event).'
-          : 'Re-validator dispatched for every account. The MT5 connector republished the login command to ZMQ outbound. If PublisherZMQEvents.ex5 is attached to a chart, account_status + fills will flow within seconds. If the events do not arrive, see Tools → Options → Expert Advisors → Allow services in the MT5 client.',
+          : 'Re-validator dispatched for every account. The MT5 connector sent a login frame to SlotService.mq5 over TCP (127.0.0.1:7778). MQL5 will emit account_status + fills via the same socket. If events do not arrive, ensure you are logged into MT5 and the #property service is running.',
     };
   });
 
@@ -481,7 +481,7 @@ export async function restRoutes(app: FastifyInstance) {
     // into our ledger row. The SimConnector (and the future real
     // MT5 connector) deterministically derives its accountRef from
     // (broker_server, broker_login).
-    const accountRef = `sim-${acct.broker_server}-${acct.broker_login}`;
+    const accountRef = `${deps.connector.id}-${acct.broker_server}-${acct.broker_login}`;
     const result = await deps.connector.openTrade(accountRef, newOrder);
     if (!result.ok) {
       deps.accounts.updateStatus(
@@ -640,7 +640,7 @@ export async function restRoutes(app: FastifyInstance) {
         title: 'Account not found',
       });
     }
-    const accountRef = `sim-${acct.broker_server}-${acct.broker_login}`;
+    const accountRef = `${deps.connector.id}-${acct.broker_server}-${acct.broker_login}`;
     let connectorState;
     try {
       connectorState = await deps.connector.state(accountRef);
@@ -677,7 +677,7 @@ export async function restRoutes(app: FastifyInstance) {
         title: 'Account not found',
       });
     }
-    const accountRef = `sim-${acct.broker_server}-${acct.broker_login}`;
+    const accountRef = `${deps.connector.id}-${acct.broker_server}-${acct.broker_login}`;
     const st = await deps.connector.state(accountRef);
     return {
       account_id: acct.id,
