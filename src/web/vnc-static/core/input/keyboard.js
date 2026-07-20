@@ -265,6 +265,14 @@ export default class Keyboard {
     }
 
     _keyboardInputReset() {
+        // Defense in depth: upstream KasmVNC fork assumes touchInput is a
+        // real <input>/<textarea>. If the caller passed null/undefined or
+        // a string (e.g. mis-ordered RFB constructor args), skip the DOM
+        // write and just reset our cached value.
+        if (!this._touchInput || typeof this._touchInput !== 'object' || !('value' in this._touchInput)) {
+            this._lastKeyboardInput = '';
+            return;
+        }
         this._touchInput.value = new Array(this._defaultKeyboardInputLen).join("_");
         this._lastKeyboardInput = this._touchInput.value;
     }
