@@ -115,18 +115,35 @@ export async function buildApp(cfg: AppConfig): Promise<FastifyInstance> {
     },
   });
 
-  // Real MT5 ZMQ subscriber. Persists fills + order state changes
-  // from PublisherZMQEvents.ex5 into the ledger. Only useful in the
-  // combined image; in dev (no ZMQ server) the connect retries silently.
-  startMt5Zmq({
-    ledger: deps.ledger,
-    resolveAccount: (brokerLogin) =>
-      deps.db
-        .prepare(
-          `SELECT * FROM accounts WHERE broker_login = ? AND status != 'disabled' LIMIT 1`,
-        )
-        .get(brokerLogin) as AccountRow | undefined,
-  });
+  // MT5 transport — Phase C / Ruta B1: TCP socket replaces the
+  // file-watcher + ZMQ bridge. Toggle via SLOT_BRIDGE=tcp|file.
+  // file = legacy ZMQ subscriber (default, regression-safe).
+  // tcp  = new direct socket path (Phase C target).
+  const bridgeMode = (process.env.SLOT_BRIDGE ?? 'file').toLowerCase();
+  if (bridgeMode === 'tcp') {
+    const { startMt5TcpServer } = await import('./services/mt5-tcp-server.js');
+    await startMt5TcpServer({
+      ledger: deps.ledger,
+      resolveAccount: (brokerLogin) =>
+        deps.db
+          .prepare(
+            `SELECT * FROM accounts WHERE broker_login = ? AND status != 'disabled' LIMIT 1`,
+          )
+          .get(brokerLogin) as AccountRow | undefined,
+    });
+    log.info({ bridge: 'tcp' }, 'MT5 bridge mode: TCP (Phase C / Ruta B1)');
+  } else {
+    startMt5Zmq({
+      ledger: deps.ledger,
+      resolveAccount: (brokerLogin) =>
+        deps.db
+          .prepare(
+            `SELECT * FROM accounts WHERE broker_login = ? AND status != 'disabled' LIMIT 1`,
+          )
+          .get(brokerLogin) as AccountRow | undefined,
+    });
+    log.info({ bridge: 'file' }, 'MT5 bridge mode: file/ZMQ (legacy)');
+  }
 
   // Start the per-account connector stream. Persists fills into the
   // ledger so /v1/fills and /v1/positions see broker activity

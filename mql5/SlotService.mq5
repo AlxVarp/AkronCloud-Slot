@@ -1,45 +1,63 @@
 //+------------------------------------------------------------------+
-//| SlotService.mq5 - service that bridges the slot with MT5          |
-//|             (no chart required).                                 |
+//| SlotService.mq5 - service that bridges the slot with MT5 via TCP |
+//|             (Phase C / Ruta B1 — replaces file-bridge stack)    |
 //+------------------------------------------------------------------+
 //
 // Runs as a #property service, launched by MT5 at terminal startup
 // (registered in MQL5/profiles/default/services.ini). No chart
 // dependency, no template, no manual attach.
 //
-// Communicates with the slot's bridge-adapter purely via files in
-// MQL5/Files/ so no ZMQ / rpyc / Python runtime is required inside
-// wine.
+// Communicates with the slot over a single TCP socket on
+// 127.0.0.1:7778 (the slot binds; MQL5 connects). Wire protocol is
+// newline-delimited JSON. Maximum frame size 64 KB.
 //
-// File protocol (all paths under MQL5/Files/):
+//   MQL5 -> host (frames):
+//     {"type":"event","kind":"fill"|"order_state"|"position"|"account",
+//      "data":{...},"ts":<epoch_ms>}
+//     {"type":"response","id":"<uuid>","ok":true|false,
+//      "result":{...}|"error":"..."}
 //
-//   MQL5 -> host (events):
-//     slot-events.jsonl   one JSON event per line:
-//       {"kind":"fill"|"order_state"|"position"|"account",
-//        "data":{...},"ts":<epoch_ms>}
+//   host -> MQL5 (frames):
+//     {"type":"command","id":"<uuid>","action":"open"|"close"|"cancel"|"sltp",
+//      "payload":{...}}
 //
-//   MQL5 -> host (state snapshot, every poll):
-//     slot-state.json      full snapshot:
-//       {"account":{...},"positions":[...],"orders":[...]}
-//
-//   host -> MQL5 (commands):
-//     slot-cmd.json        single JSON object:
-//       {"id":"<uuid>","action":"open"|"close"|"cancel"|"sltp",
-//        "payload":{...},"ts":<epoch_ms>}
-//
-//   MQL5 -> host (responses):
-//     slot-resp.jsonl      one JSON per line:
-//       {"id":"<uuid>","ok":true|false,"result":{...}|"error":"..."}
-//
-// Slot-to-MT5 path: bridge-adapter.py watches slot-events.jsonl
-// and publishes to ZMQ :5557. Subscribes ZMQ :5556 and writes to
-// slot-cmd.json.
+// Requires `AllowDllImport=1` in MQL5/Config/terminal.ini (the
+// Dockerfile sets this in Phase 1 build step). Pulls ws2_32.dll
+// from Wine — present in /opt/wine-stable/lib/wine.
 //
 //+------------------------------------------------------------------+
 #property copyright "akroncloud-slot"
-#property version   "2.00"
+#property version   "2.10"
 #property service
 #property strict  false
+
+//+------------------------------------------------------------------+
+//| ws2_32 (Windows Sockets) imports — Phase C / Ruta B1             |
+//+------------------------------------------------------------------+
+#import "ws2_32.dll"
+   int  WSAStartup(short wVersionRequested, uchar &lpWSAData[]);
+   int  WSACleanup();
+   int  socket(int af, int type, int protocol);
+   int  connect(int s, uchar &name[], int namelen);
+   int  send(int s, const uchar &buf[], int len, int flags);
+   int  recv(int s, uchar &buf[], int len, int flags);
+   int  closesocket(int s);
+   int  ioctlsocket(int s, long cmd, uchar &argp[]);
+   int  WSAGetLastError();
+#import
+
+//+------------------------------------------------------------------+
+//| Constants                                                          |
+//+------------------------------------------------------------------+
+#define INVALID_SOCKET   (-1)
+#define SOCKET_ERROR     (-1)
+#define AF_INET          2
+#define SOCK_STREAM       1
+#define IPPROTO_TCP       6
+#define MSG_DONTWAIT    0x40
+#define RECV_CHUNK_MAX   4096
+#define RECV_BUF_MAX    65536
+#define HTONS(a) ((ushort)((((a) & 0xFF) << 8) | (((a) >> 8) & 0xFF)))
 
 #include <Files\File.mqh>
 #include <Trade\Trade.mqh>
@@ -50,35 +68,83 @@
 
 input string  DefaultSymbol       = "EURUSD";
 input int     PollSeconds         = 1;
-input string  EventsFilePath      = "slot-events.jsonl";
-input string  StateFilePath       = "slot-state.json";
-input string  CmdFilePath         = "slot-cmd.json";
-input string  RespFilePath        = "slot-resp.jsonl";
+input string  CmdSocketHost       = "127.0.0.1";
+input int     CmdSocketPort       = 7778;
 input int     StartupMarkerWaitMs = 3000;
 
 datetime g_lastPollTime       = 0;
 string   g_lastProcessedCmdId  = "";
 datetime g_lastCmdMtime       = 0;
 
+int    g_cmdSock     = INVALID_SOCKET;
+string g_recvBuf     = "";
+int    g_lastWSAErr  = 0;
+
 int OnStart()
 {
    PrintFormat("SlotService: start on %s poll=%ds", _Symbol, PollSeconds);
-   // Mark autostart done.
-   WriteStartupMarker();
-   // Initial snapshot so the slot's adapter has state immediately.
-   WriteStateFile();
+   uchar wsadata[408];
+   int rc = WSAStartup(0x0202, wsadata);
+   if(rc != 0) { Print("SlotService: WSAStartup failed"); return INIT_FAILED; }
+   ConnectToSlot();
+   SendStartupEvent();
    g_lastPollTime = TimeCurrent();
-   EventSetMillisecondTimer(MathMax(250, PollSeconds * 1000));
+   EventSetMillisecondTimer(MathMax(50, PollSeconds * 1000));
    return INIT_SUCCEEDED;
+}
+
+void OnDeinit(const int reason)
+{
+   if(g_cmdSock != INVALID_SOCKET) {
+      closesocket(g_cmdSock);
+      g_cmdSock = INVALID_SOCKET;
+   }
+   WSACleanup();
 }
 
 void OnTimer()
 {
-   if(TimeCurrent() - g_lastPollTime >= PollSeconds)
-   {
+   if(g_cmdSock == INVALID_SOCKET) {
+      ConnectToSlot();
+      if(g_cmdSock == INVALID_SOCKET) return;
+   }
+
+   // 1) Drain recv — non-blocking, accumulate frames by '\n'
+   uchar buf[RECV_CHUNK_MAX];
+   int n = recv(g_cmdSock, buf, RECV_CHUNK_MAX, MSG_DONTWAIT);
+   if(n == SOCKET_ERROR) {
+      g_lastWSAErr = WSAGetLastError();
+      PrintFormat("SlotService: recv error %d, closing", g_lastWSAErr);
+      closesocket(g_cmdSock);
+      g_cmdSock = INVALID_SOCKET;
+      return;
+   }
+   if(n == 0) {
+      Print("SlotService: peer closed");
+      closesocket(g_cmdSock);
+      g_cmdSock = INVALID_SOCKET;
+      return;
+   }
+   if(n > 0) {
+      g_recvBuf += CharArrayToString(buf, 0, n, CP_UTF8);
+      int idx;
+      while((idx = StringFind(g_recvBuf, "\n")) >= 0) {
+         string frame = StringSubstr(g_recvBuf, 0, idx);
+         g_recvBuf = StringSubstr(g_recvBuf, idx + 1);
+         ProcessCommandFrame(frame);
+      }
+      if(StringLen(g_recvBuf) > RECV_BUF_MAX) {
+         Print("SlotService: recv buffer overflow, dropping");
+         g_recvBuf = "";
+      }
+   }
+
+   // 2) Periodically push state snapshot
+   if(TimeCurrent() - g_lastPollTime >= PollSeconds) {
       g_lastPollTime = TimeCurrent();
-      TryProcessCommand();
-      WriteStateFile();
+      SendFrame("{\"type\":\"event\",\"kind\":\"state\",\"ts\":"
+                + TimeToMs(TimeCurrent()) + ",\"data\":"
+                + BuildStateJson() + "}");
    }
 }
 
@@ -121,41 +187,98 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
       return;
    }
 
-   string ts = TimeToMs(TimeCurrent());
-   string line = "{\"kind\":\"" + kind + "\",\"data\":{" + data + "},\"ts\":" + ts + "}\n";
-   AppendLine(MQL5FilesPath() + EventsFilePath, line);
+   SendFrame("{\"type\":\"event\",\"kind\":\"" + kind
+             + "\",\"data\":{" + data
+             + "},\"ts\":" + TimeToMs(TimeCurrent()) + "}");
 }
 
-string MQL5FilesPath()
+//+------------------------------------------------------------------+
+//| Helpers — TCP transport                                            |
+//+------------------------------------------------------------------+
+
+void ConnectToSlot()
 {
-   string p = TerminalInfoString(TERMINAL_DATA_PATH);
-   StringReplace(p, "\\", "/");
-   int idx = StringFind(p, "/MQL5");
-   if(idx >= 0) p = StringSubstr(p, 0, idx) + "/MQL5/Files";
-   return p + "/";
+   if(g_cmdSock != INVALID_SOCKET) {
+      closesocket(g_cmdSock);
+      g_cmdSock = INVALID_SOCKET;
+   }
+   int s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+   if(s == INVALID_SOCKET) {
+      g_lastWSAErr = WSAGetLastError();
+      PrintFormat("SlotService: socket() failed err=%d", g_lastWSAErr);
+      return;
+   }
+   uchar addr[16];
+   ArrayInitialize(addr, 0);
+   addr[0] = (uchar)(AF_INET & 0xFF);
+   addr[1] = (uchar)((AF_INET >> 8) & 0xFF);
+   ushort port_be = HTONS((ushort)CmdSocketPort);
+   addr[2] = (uchar)(port_be & 0xFF);
+   addr[3] = (uchar)((port_be >> 8) & 0xFF);
+   addr[4] = 127; addr[5] = 0; addr[6] = 0; addr[7] = 1;
+   int rc = connect(s, addr, 16);
+   if(rc == SOCKET_ERROR) {
+      g_lastWSAErr = WSAGetLastError();
+      closesocket(s);
+      PrintFormat("SlotService: connect(%s:%d) failed err=%d",
+                  CmdSocketHost, CmdSocketPort, g_lastWSAErr);
+      return;
+   }
+   g_cmdSock = s;
+   PrintFormat("SlotService: connected to slot %s:%d (sock=%d)",
+               CmdSocketHost, CmdSocketPort, s);
 }
+
+bool SendFrame(string json)
+{
+   if(g_cmdSock == INVALID_SOCKET) return false;
+   string line = json + "\n";
+   uchar buf[];
+   StringToCharArray(line, buf, 0, StringLen(line), CP_UTF8);
+   int total = ArraySize(buf);
+   int sent  = 0;
+   while(sent < total) {
+      int n = send(g_cmdSock, buf, total - sent, MSG_DONTWAIT);
+      if(n == SOCKET_ERROR) {
+         g_lastWSAErr = WSAGetLastError();
+         PrintFormat("SlotService: send failed err=%d, closing", g_lastWSAErr);
+         closesocket(g_cmdSock);
+         g_cmdSock = INVALID_SOCKET;
+         return false;
+      }
+      sent += n;
+   }
+   return true;
+}
+
+void SendStartupEvent()
+{
+   SendFrame("{\"type\":\"event\",\"kind\":\"startup\",\"ts\":"
+             + TimeToMs(TimeCurrent()) + "}");
+}
+
+void ProcessCommandFrame(string frame)
+{
+   string id      = JsonField(frame, "id");
+   string action = JsonField(frame, "action");
+   bool   ok     = false;
+   string result = "{\"error\":\"unknown_action\"}";
+   if(action == "open")   { ok = true; result = HandleOpen(frame); }
+   else if(action == "close")  { ok = true; result = HandleClose(frame); }
+   else if(action == "cancel") { ok = true; result = HandleCancel(frame); }
+   else if(action == "sltp")   { ok = true; result = HandleSltp(frame); }
+   SendFrame("{\"type\":\"response\",\"id\":\"" + id
+             + "\",\"ok\":" + (ok ? "true" : "false")
+             + ",\"result\":" + result + "}");
+}
+
+//+------------------------------------------------------------------+
+//| Helpers — common                                                   |
+//+------------------------------------------------------------------+
 
 string TimeToMs(datetime t)
 {
    return IntegerToString((long)((long)t * 1000L));
-}
-
-void AppendLine(const string path, const string line)
-{
-   int h = FileOpen(path, FILE_READ|FILE_WRITE|FILE_CSV|FILE_TXT|FILE_ANSI|FILE_SHARE_READ|FILE_SHARE_WRITE, '\n', CP_UTF8);
-   if(h == INVALID_HANDLE) return;
-   FileSeek(h, 0, SEEK_END);
-   FileWriteString(h, line);
-   FileClose(h);
-}
-
-void WriteStartupMarker()
-{
-   string path = MQL5FilesPath() + "slot-autostart.done";
-   int h = FileOpen(path, FILE_WRITE|FILE_TXT|FILE_ANSI, '\n', CP_UTF8);
-   if(h == INVALID_HANDLE) return;
-   FileWriteString(h, "ok " + TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS) + "\n");
-   FileClose(h);
 }
 
 string JsonEscape(string s)
@@ -167,18 +290,6 @@ string JsonEscape(string s)
    StringReplace(r, "\r", "\\r");
    StringReplace(r, "\t", "\\t");
    return r;
-}
-
-void WriteStateFile()
-{
-   string path = MQL5FilesPath() + StateFilePath;
-   string json = BuildStateJson();
-   string tmp = path + ".tmp";
-   int h = FileOpen(tmp, FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_COMMON, '\n', CP_UTF8);
-   if(h == INVALID_HANDLE) return;
-   FileWriteString(h, json);
-   FileClose(h);
-   FileMove(tmp, 0, path, FILE_REWRITE);
 }
 
 string BuildStateJson()
@@ -251,132 +362,92 @@ string BuildStateJson()
    return "{\"account\":" + acc + ",\"positions\":" + pos + ",\"orders\":" + ords + "}";
 }
 
-void TryProcessCommand()
+string HandleOpen(const string body)
 {
-   string path = MQL5FilesPath() + CmdFilePath;
-   if(!FileIsExist(path)) return;
+   string sym   = JsonField(body, "payload.instrument");
+   double vol   = StringToDouble(JsonField(body, "payload.qty"));
+   double price = StringToDouble(JsonField(body, "payload.price"));
+   string side  = JsonField(body, "payload.side");
+   int    dir   = ORDER_TYPE_BUY;
+   if(side == "sell") dir = ORDER_TYPE_SELL;
+   double sl    = StringToDouble(JsonField(body, "payload.sl"));
+   double tp    = StringToDouble(JsonField(body, "payload.tp"));
+   string comment = JsonField(body, "id");
 
-   datetime mt = (datetime)FileGetInteger(path, FILE_MODIFY_DATE, true);
-   if(mt == g_lastCmdMtime) return;
+   MqlTradeRequest req;
+   ZeroMemory(req);
+   req.action    = TRADE_ACTION_DEAL;
+   req.symbol    = sym;
+   req.volume    = vol;
+   bool isBuy = (dir == ORDER_TYPE_BUY);
+   req.type      = price > 0
+                   ? (isBuy ? ORDER_TYPE_BUY_LIMIT : ORDER_TYPE_SELL_LIMIT)
+                   : (isBuy ? ORDER_TYPE_BUY      : ORDER_TYPE_SELL);
+   req.price     = price;
+   req.sl        = sl;
+   req.tp        = tp;
+   req.deviation = 10;
+   req.comment   = comment;
+   req.type_filling = ORDER_FILLING_FOK;
 
-   int h = FileOpen(path, FILE_READ|FILE_TXT|FILE_ANSI, '\n', CP_UTF8);
-   if(h == INVALID_HANDLE) return;
-   string body = FileReadString(h, 65536);
-   FileClose(h);
+   MqlTradeResult res;
+   ZeroMemory(res);
+   bool ok = OrderSend(req, res);
+   if(ok)
+      return "{\"order_id\":\"" + IntegerToString((long)res.order) + "\","
+             + "\"broker_order_id\":\"" + IntegerToString((long)res.order) + "\"}";
+   return "{\"error\":\"" + JsonEscape(res.comment)
+          + "\",\"retcode\":" + IntegerToString(res.retcode) + "}";
+}
 
-   string id      = JsonField(body, "id");
-   string action = JsonField(body, "action");
-   if(id == "" || id == g_lastProcessedCmdId)
-   {
-      g_lastCmdMtime = mt;
-      return;
-   }
-   g_lastProcessedCmdId = id;
-   g_lastCmdMtime = mt;
+string HandleClose(const string body)
+{
+   ulong ticket = (ulong)StringToInteger(JsonField(body, "payload.position_id"));
+   if(ticket == 0) ticket = (ulong)StringToInteger(JsonField(body, "payload.ticket"));
+   if(ticket == 0)                       return "{\"error\":\"missing_ticket\"}";
+   if(!PositionSelectByTicket(ticket))   return "{\"error\":\"position_not_found\"}";
+   MqlTradeRequest req;
+   ZeroMemory(req);
+   req.action   = TRADE_ACTION_DEAL;
+   req.position = ticket;
+   req.symbol   = PositionGetSymbol(ticket);
+   req.volume   = PositionGetDouble(POSITION_VOLUME);
+   bool closeBuy = ((int)PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY);
+   req.type     = closeBuy ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+   req.deviation = 10;
+   MqlTradeResult res;
+   ZeroMemory(res);
+   bool ok = OrderSend(req, res);
+   return ok ? ("{\"closed_ticket\":\"" + IntegerToString((long)res.order) + "\"}")
+             : ("{\"error\":\"" + JsonEscape(res.comment) + "\"}");
+}
 
-   PrintFormat("SlotService: cmd id=%s action=%s", id, action);
+string HandleCancel(const string body)
+{
+   ulong ticket = (ulong)StringToInteger(JsonField(body, "payload.order_id"));
+   if(ticket == 0) return "{\"error\":\"missing_ticket\"}";
+   CTrade trade;
+   bool ok = trade.OrderDelete(ticket);
+   return ok ? ("{\"canceled\":\"" + IntegerToString((long)ticket) + "\"}")
+             : ("{\"error\":\"cancel_failed\"}");
+}
 
-   bool ok = false;
-   string result = "{\"error\":\"unknown_action\"}";
-
-   if(action == "open")
-   {
-      string sym   = JsonField(body, "payload.instrument");
-      double vol   = StringToDouble(JsonField(body, "payload.qty"));
-      double price = StringToDouble(JsonField(body, "payload.price"));
-      string side  = JsonField(body, "payload.side");
-      int    dir   = ORDER_TYPE_BUY;
-      if(side == "sell") dir = ORDER_TYPE_SELL;
-      double sl    = StringToDouble(JsonField(body, "payload.sl"));
-      double tp    = StringToDouble(JsonField(body, "payload.tp"));
-      string comment = id;
-
-      MqlTradeRequest req;
-      ZeroMemory(req);
-      req.action    = TRADE_ACTION_DEAL;
-      req.symbol    = sym;
-      req.volume    = vol;
-      bool isBuy = (dir == ORDER_TYPE_BUY);
-      req.type      = price > 0
-                      ? (isBuy ? ORDER_TYPE_BUY_LIMIT : ORDER_TYPE_SELL_LIMIT)
-                      : (isBuy ? ORDER_TYPE_BUY      : ORDER_TYPE_SELL);
-      req.price     = price;
-      req.sl        = sl;
-      req.tp        = tp;
-      req.deviation = 10;
-      req.comment   = comment;
-      req.type_filling = ORDER_FILLING_FOK;
-
-      MqlTradeResult res;
-      ZeroMemory(res);
-      ok = OrderSend(req, res);
-      if(ok)
-         result = "{\"order_id\":\"" + IntegerToString((long)res.order) + "\","
-                  + "\"broker_order_id\":\"" + IntegerToString((long)res.order) + "\"}";
-      else
-         result = "{\"error\":\"" + JsonEscape(res.comment) + "\",\"retcode\":" + IntegerToString(res.retcode) + "}";
-   }
-   else if(action == "close")
-   {
-      ulong ticket = (ulong)StringToInteger(JsonField(body, "payload.position_id"));
-      if(ticket == 0) ticket = (ulong)StringToInteger(JsonField(body, "payload.ticket"));
-      if(ticket == 0)
-      { result = "{\"error\":\"missing_ticket\"}"; }
-      else if(!PositionSelectByTicket(ticket))
-      { result = "{\"error\":\"position_not_found\"}"; }
-      else
-      {
-         MqlTradeRequest req;
-         ZeroMemory(req);
-         req.action = TRADE_ACTION_DEAL;
-         req.position = ticket;
-         req.symbol = PositionGetSymbol(ticket);
-         req.volume = PositionGetDouble(POSITION_VOLUME);
-         bool closeBuy = ((int)PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY);
-         req.type = closeBuy ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
-         req.deviation = 10;
-         MqlTradeResult res;
-         ZeroMemory(res);
-         ok = OrderSend(req, res);
-         result = ok ? ("{\"closed_ticket\":\"" + IntegerToString((long)res.order) + "\"}")
-                     : ("{\"error\":\"" + JsonEscape(res.comment) + "\"}");
-      }
-   }
-   else if(action == "cancel")
-   {
-      ulong ticket = (ulong)StringToInteger(JsonField(body, "payload.order_id"));
-      if(ticket == 0) { result = "{\"error\":\"missing_ticket\"}"; }
-      else
-      {
-         CTrade trade;
-         ok = trade.OrderDelete(ticket);
-         result = ok ? ("{\"canceled\":\"" + IntegerToString((long)ticket) + "\"}")
-                     : ("{\"error\":\"cancel_failed\"}");
-      }
-   }
-   else if(action == "sltp")
-   {
-      ulong ticket = (ulong)StringToInteger(JsonField(body, "payload.position_id"));
-      if(ticket == 0) { result = "{\"error\":\"missing_ticket\"}"; }
-      else if(!PositionSelectByTicket(ticket)) { result = "{\"error\":\"position_not_found\"}"; }
-      else
-      {
-         MqlTradeRequest req;
-         ZeroMemory(req);
-         req.action = TRADE_ACTION_SLTP;
-         req.position = ticket;
-         req.sl = StringToDouble(JsonField(body, "payload.sl"));
-         req.tp = StringToDouble(JsonField(body, "payload.tp"));
-         MqlTradeResult res;
-         ZeroMemory(res);
-         ok = OrderSend(req, res);
-         result = ok ? ("{\"modified\":\"" + IntegerToString((long)ticket) + "\"}")
-                     : ("{\"error\":\"" + JsonEscape(res.comment) + "\"}");
-      }
-   }
-
-   string resp = "{\"id\":\"" + id + "\",\"ok\":\"" + (ok ? "true" : "false") + "\",\"result\":" + result + "}\n";
-   AppendLine(MQL5FilesPath() + RespFilePath, resp);
+string HandleSltp(const string body)
+{
+   ulong ticket = (ulong)StringToInteger(JsonField(body, "payload.position_id"));
+   if(ticket == 0) return "{\"error\":\"missing_ticket\"}";
+   if(!PositionSelectByTicket(ticket)) return "{\"error\":\"position_not_found\"}";
+   MqlTradeRequest req;
+   ZeroMemory(req);
+   req.action   = TRADE_ACTION_SLTP;
+   req.position = ticket;
+   req.sl       = StringToDouble(JsonField(body, "payload.sl"));
+   req.tp       = StringToDouble(JsonField(body, "payload.tp"));
+   MqlTradeResult res;
+   ZeroMemory(res);
+   bool ok = OrderSend(req, res);
+   return ok ? ("{\"modified\":\"" + IntegerToString((long)ticket) + "\"}")
+             : ("{\"error\":\"" + JsonEscape(res.comment) + "\"}");
 }
 
 string JsonField(const string body, const string path)
