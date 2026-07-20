@@ -9,6 +9,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
+    "postbuild": "rm -rf dist/web/vnc-static && cp -r src/web/vnc-static dist/web/vnc-static",
     "dev": "tsx watch src/server.ts",
     "start": "node dist/server.js",
     "dev:token": "tsx scripts/dev-token.ts",
@@ -20,6 +21,7 @@
   },
   "dependencies": {
     "@fastify/cors": "^9.0.0",
+    "@fastify/static": "^7.0.4",
     "@fastify/websocket": "^10.0.0",
     "better-sqlite3": "^11.3.0",
     "dotenv": "^16.4.0",

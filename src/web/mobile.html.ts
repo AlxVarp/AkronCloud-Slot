@@ -2,14 +2,20 @@
  * Mobile-friendly VNC wrapper for KasmVNC.
  *
  * Serves a single HTML page at /mobile that:
- *   1. Connects to KasmVNC's WebSocket bridge (ws://host:3000/websockify)
- *      using the noVNC RFB client (loaded from a CDN).
- *   2. Renders the MT5 desktop in a full-viewport canvas.
- *   3. Provides a virtual keyboard + macro buttons for phone users.
- *   4. Stores broker credentials in localStorage for one-tap fill.
+ *   1. Iframes KasmVNC's own noVNC client (served same-origin at
+ *      /vnc-static/ — copied from /usr/local/share/kasmvnc/www at
+ *      build time). The bundled client already knows how to talk
+ *      to KasmVNC's WebSocket endpoint, so we don't need to reimplement
+ *      the noVNC stack.
+ *   2. Wraps it with a phone-friendly layout: virtual keyboard,
+ *      macro buttons (Esc/Tab/Enter/F2/Ctrl+…), zoom controls.
+ *   3. Auto-types broker credentials into the MT5 login dialog via
+ *      `iframe.contentWindow.rfb.sendKey(...)`. Same-origin iframes
+ *      give us direct access to the KasmVNC client's rfb instance.
+ *   4. Stores credentials in localStorage for one-tap fill.
  *
- * The HTML is inlined to keep this single-file (no static file serving
- * required). Keep it lean — the page runs on a phone browser.
+ * The KasmVNC bundle is a webpack build that exposes `window.rfb`
+ * once the WebSocket connection is up. We poll for that and use it.
  */
 
 export const MOBILE_HTML = `<!DOCTYPE html>
@@ -68,20 +74,24 @@ export const MOBILE_HTML = `<!DOCTYPE html>
     }
     #topbar button:active { background: #21262d; }
 
-    /* ─── VNC canvas ─── */
+    /* ─── VNC iframe ─── */
     #screen {
       flex: 1; min-height: 0;
       background: #000;
       position: relative;
-      overflow: auto;
-      -webkit-overflow-scrolling: touch;
-      touch-action: pan-x pan-y;
+      overflow: hidden;
     }
-    #screen canvas { display: block; transform-origin: 0 0; }
+    #screen iframe {
+      position: absolute; inset: 0;
+      width: 100%; height: 100%;
+      border: 0;
+      background: #000;
+    }
     #placeholder {
       position: absolute; inset: 0;
       display: flex; align-items: center; justify-content: center;
       color: var(--muted); font-size: 13px; text-align: center; padding: 24px;
+      z-index: 2; pointer-events: none;
     }
 
     /* ─── credential sheet ─── */
@@ -161,20 +171,6 @@ export const MOBILE_HTML = `<!DOCTYPE html>
       cursor: pointer;
     }
     #macros button:active { background: #21262d; }
-
-    #zoom {
-      position: absolute; top: 8px; right: 8px;
-      display: flex; flex-direction: column; gap: 4px;
-      z-index: 5;
-    }
-    #zoom button {
-      width: 40px; height: 40px;
-      background: rgba(0,0,0,.6); color: #fff;
-      border: 1px solid rgba(255,255,255,.2);
-      border-radius: 6px;
-      font-size: 18px;
-      cursor: pointer;
-    }
   </style>
 </head>
 <body>
@@ -183,17 +179,12 @@ export const MOBILE_HTML = `<!DOCTYPE html>
     <span class="status" id="status"></span>
     <span class="label" id="statuslabel">connecting…</span>
     <button id="credsbtn">Credentials</button>
-    <button id="fitbtn">Fit</button>
     <button id="reloadbtn">↻</button>
   </div>
 
   <div id="screen">
-    <div id="zoom">
-      <button data-zoom="in" title="Zoom in">+</button>
-      <button data-zoom="out" title="Zoom out">−</button>
-      <button data-zoom="1" title="Reset">1×</button>
-    </div>
-    <div id="placeholder">Connecting to KasmVNC…</div>
+    <div id="placeholder">Loading KasmVNC client…</div>
+    <iframe id="vnc" src="/vnc-static/"></iframe>
   </div>
 
   <div id="macros">
@@ -207,7 +198,7 @@ export const MOBILE_HTML = `<!DOCTYPE html>
   </div>
 
   <div id="keyboard">
-    <div class="kbrow" id="row1">
+    <div class="kbrow">
       <button data-key="q">q</button>
       <button data-key="w">w</button>
       <button data-key="e">e</button>
@@ -219,7 +210,7 @@ export const MOBILE_HTML = `<!DOCTYPE html>
       <button data-key="o">o</button>
       <button data-key="p">p</button>
     </div>
-    <div class="kbrow" id="row2">
+    <div class="kbrow">
       <button data-key="a">a</button>
       <button data-key="s">s</button>
       <button data-key="d">d</button>
@@ -230,7 +221,7 @@ export const MOBILE_HTML = `<!DOCTYPE html>
       <button data-key="k">k</button>
       <button data-key="l">l</button>
     </div>
-    <div class="kbrow" id="row3">
+    <div class="kbrow">
       <button data-key="shift" class="accent" style="flex: 1.5">⇧</button>
       <button data-key="z">z</button>
       <button data-key="x">x</button>
@@ -242,7 +233,7 @@ export const MOBILE_HTML = `<!DOCTYPE html>
       <button data-key="." class="muted">.</button>
       <button data-key="backspace" class="danger" style="flex: 1.5">⌫</button>
     </div>
-    <div class="kbrow" id="row4">
+    <div class="kbrow">
       <button data-key="-" class="muted">-</button>
       <button data-key="1">1</button>
       <button data-key="2">2</button>
@@ -255,7 +246,7 @@ export const MOBILE_HTML = `<!DOCTYPE html>
       <button data-key="9">9</button>
       <button data-key="0">0</button>
     </div>
-    <div class="kbrow" id="row5">
+    <div class="kbrow">
       <button data-key="space" class="xwide muted">space</button>
       <button data-key="enter" class="accent wide">enter ⏎</button>
     </div>
@@ -288,8 +279,6 @@ export const MOBILE_HTML = `<!DOCTYPE html>
 (function () {
   'use strict';
 
-  var NO_VNC_URL = 'https://cdn.jsdelivr.net/npm/@novnc/novnc@1.4.0/core/rfb.js';
-
   var statusDot   = document.getElementById('status');
   var statusLabel = document.getElementById('statuslabel');
   var screen      = document.getElementById('screen');
@@ -297,124 +286,54 @@ export const MOBILE_HTML = `<!DOCTYPE html>
   var credsheet   = document.getElementById('credsheet');
   var credbtn     = document.getElementById('credsbtn');
   var reloadbtn   = document.getElementById('reloadbtn');
-  var fitbtn      = document.getElementById('fitbtn');
+  var vncFrame    = document.getElementById('vnc');
 
-  var rfb = null;
   var shift = false;
-  var zoom = 1;
   var creds = loadCreds();
-
-  var host = location.hostname;
-  // KasmVNC's Xvnc WebSocket lives at the nginx root path / on
-  // port 3000 (forwarded by nginx from KasmVNC's own :6901). The
-  // legacy /websockify alias is NOT registered in this image,
-  // so we point noVNC at the root.
-  var wsUrl = 'ws://' + host + ':3000/';
+  var rfb = null;
 
   function setStatus(state, msg) {
     statusDot.className = 'status' + (state === 'ok' ? ' ok' : state === 'err' ? ' err' : '');
     statusLabel.textContent = msg;
   }
 
-  function loadScript(src) {
-    // noVNC 1.4+ ships core/rfb.js as an ES module. Load via
-    // dynamic import (the script tag is type=module to satisfy the
-    // browser's ESM rules). The default export is the RFB class.
-    return new Promise(function (resolve, reject) {
-      var s = document.createElement('script');
-      s.type = 'module';
-      s.textContent = "import('" + src + "').then(m => { window.RFB = m.default; }).catch(e => { window.__rfbLoadError = e; });";
-      s.onerror = function () { reject(new Error('failed to load ' + src)); };
-      document.head.appendChild(s);
-      // poll for either RFB or load error
-      var waited = 0;
-      var t = setInterval(function () {
-        if (typeof window.RFB === 'function') { clearInterval(t); resolve(); return; }
-        if (window.__rfbLoadError) { clearInterval(t); reject(window.__rfbLoadError); return; }
-        if (++waited > 100) { clearInterval(t); reject(new Error('timeout loading ' + src)); }
-      }, 100);
-    });
-  }
-
-  function connect() {
-    setStatus('', 'connecting…');
-    placeholder.style.display = 'flex';
-    placeholder.textContent = 'Connecting to ' + wsUrl + '…';
-    loadScript(NO_VNC_URL).then(function () {
-      if (typeof window.RFB !== 'function') {
-        throw new Error('noVNC RFB class not found after load');
+  function tryBindRfb() {
+    try {
+      var w = vncFrame.contentWindow;
+      if (!w) return false;
+      if (w.rfb && typeof w.rfb.sendKey === 'function') {
+        rfb = w.rfb;
+        return true;
       }
-      var canvas = document.createElement('canvas');
-      screen.innerHTML = '';
-      screen.appendChild(canvas);
-      var zoomEl = document.getElementById('zoom');
-      if (zoomEl) screen.appendChild(zoomEl);
+    } catch (e) {}
+    return false;
+  }
 
-      rfb = new window.RFB(canvas, wsUrl, {
-        repeaterID: 'akroncloud-mobile',
-        public: false,
-        viewOnly: false,
-        clipViewport: false,
-        resizeSession: true,
-        showDotCursor: true,
-        background: '#000',
-        qualityLevel: 6,
-        compressionLevel: 2,
-      });
-      rfb.addEventListener('connect', function () {
-        setStatus('ok', 'connected to MT5');
+  function startPollingIframe() {
+    var tries = 0;
+    var t = setInterval(function () {
+      tries++;
+      if (tryBindRfb()) {
+        clearInterval(t);
+        setStatus('ok', 'connected (rfb ready)');
         placeholder.style.display = 'none';
-        fit();
-      });
-      rfb.addEventListener('disconnect', function (e) {
-        setStatus('err', 'disconnected' + (e && e.detail && e.detail.reason ? ': ' + e.detail.reason : ''));
-        placeholder.style.display = 'flex';
-        placeholder.textContent = 'Disconnected. Tap ↻ to retry.';
-      });
-      rfb.addEventListener('credentialsrequired', function () {
-        setStatus('', 'credentials required (server-side)');
-      });
-    }).catch(function (e) {
-      setStatus('err', 'load failed: ' + e.message);
-      placeholder.textContent = 'Could not load noVNC: ' + e.message;
-    });
+      } else if (tries > 60) {
+        clearInterval(t);
+        setStatus('err', 'rfb instance not found');
+      } else {
+        setStatus('', 'connecting… (' + tries + ')');
+      }
+    }, 500);
   }
 
-  function sendChar(ch) {
-    if (!rfb) return;
-    var baseCh = ch.toLowerCase();
-    var keysym = XK[baseCh] || XK[ch] || ch.charCodeAt(0);
-    rfb.sendKey(keysym, true);
-    rfb.sendKey(keysym, false);
-  }
-  function sendKeyName(name) {
-    if (!rfb) return;
-    var keysym = NAMED_KEYS[name] || XK[name];
-    if (!keysym) return;
-    rfb.sendKey(keysym, true);
-    rfb.sendKey(keysym, false);
-  }
-  function sendMacro(macro) {
-    if (!rfb) return;
-    if (macro === 'esc' || macro === 'tab' || macro === 'enter' || macro === 'f2') {
-      sendKeyName(macro);
-      return;
-    }
-    if (macro.indexOf('ctrl-') === 0) {
-      var key = macro.slice(5);
-      rfb.sendKey(0xFFE3, true);
-      rfb.sendKey(XK[key.toLowerCase()] || XK[key] || key.toUpperCase().charCodeAt(0), true);
-      rfb.sendKey(XK[key.toLowerCase()] || XK[key] || key.toUpperCase().charCodeAt(0), false);
-      rfb.sendKey(0xFFE3, false);
-      return;
-    }
-  }
+  vncFrame.addEventListener('load', function () {
+    startPollingIframe();
+  });
 
   var XK = {
-    ' ': 0x20,
-    '!': 0x21, '"': 0x22, '#': 0x23, '$': 0x24, '%': 0x25, '&': 0x26,
-    "'": 0x27, '(': 0x28, ')': 0x29, '*': 0x2A, '+': 0x2B, ',': 0x2C,
-    '-': 0x2D, '.': 0x2E, '/': 0x2F,
+    ' ': 0x20, '!': 0x21, '"': 0x22, '#': 0x23, '$': 0x24, '%': 0x25,
+    '&': 0x26, "'": 0x27, '(': 0x28, ')': 0x29, '*': 0x2A, '+': 0x2B,
+    ',': 0x2C, '-': 0x2D, '.': 0x2E, '/': 0x2F,
     '0': 0x30, '1': 0x31, '2': 0x32, '3': 0x33, '4': 0x34,
     '5': 0x35, '6': 0x36, '7': 0x37, '8': 0x38, '9': 0x39,
     ':': 0x3A, ';': 0x3B, '<': 0x3C, '=': 0x3D, '>': 0x3E, '?': 0x3F,
@@ -425,12 +344,23 @@ export const MOBILE_HTML = `<!DOCTYPE html>
     's': 0x73, 't': 0x74, 'u': 0x75, 'v': 0x76, 'w': 0x77, 'x': 0x78,
     'y': 0x79, 'z': 0x7A,
   };
-  var NAMED_KEYS = {
-    'esc':    0xFF1B,
-    'tab':    0xFF09,
-    'enter':  0xFF0D,
-    'f2':     0xFFBE,
+  var NAMED = {
+    'esc': 0xFF1B, 'tab': 0xFF09, 'enter': 0xFF0D, 'f2': 0xFFBE,
+    'BackSpace': 0xFF08, 'shift_L': 0xFFE1, 'Control_L': 0xFFE3,
   };
+
+  function sendKey(keysym) {
+    if (!rfb) return;
+    try {
+      rfb.sendKey(keysym, true);
+      rfb.sendKey(keysym, false);
+    } catch (e) {}
+  }
+  function sendChar(ch) {
+    var base = ch.toLowerCase();
+    var keysym = XK[base] || XK[ch] || ch.charCodeAt(0);
+    sendKey(keysym);
+  }
 
   function pressKey(ch) {
     if (ch === 'shift') {
@@ -440,11 +370,11 @@ export const MOBILE_HTML = `<!DOCTYPE html>
       });
       return;
     }
-    if (ch === 'backspace') { sendKeyName('BackSpace'); shift = false; return; }
-    if (ch === 'enter')    { sendKeyName('enter');                 return; }
-    if (ch === 'space')    { sendChar(' ');                        return; }
-    if (ch === '-')        { sendChar('-');                        return; }
-    if (ch === '.')        { sendChar('.');                        return; }
+    if (ch === 'backspace') { sendKey(NAMED.BackSpace); shift = false; return; }
+    if (ch === 'enter')    { sendKey(NAMED.enter);                return; }
+    if (ch === 'space')    { sendKey(XK[' ']);                    return; }
+    if (ch === '-')        { sendChar('-');                       return; }
+    if (ch === '.')        { sendChar('.');                       return; }
     var out = shift ? ch.toUpperCase() : ch;
     sendChar(out);
     if (shift) {
@@ -452,6 +382,20 @@ export const MOBILE_HTML = `<!DOCTYPE html>
       document.querySelectorAll('[data-key="shift"]').forEach(function (b) {
         b.style.opacity = '0.6';
       });
+    }
+  }
+
+  function sendMacro(macro) {
+    if (macro === 'esc' || macro === 'tab' || macro === 'enter' || macro === 'f2') {
+      sendKey(NAMED[macro]);
+      return;
+    }
+    if (macro.indexOf('ctrl-') === 0) {
+      var key = macro.slice(5);
+      sendKey(NAMED.Control_L);
+      sendKey(XK[key.toLowerCase()] || XK[key] || key.toUpperCase().charCodeAt(0));
+      sendKey(NAMED.Control_L);
+      return;
     }
   }
 
@@ -469,6 +413,7 @@ export const MOBILE_HTML = `<!DOCTYPE html>
   }
   function closeCreds() { credsheet.classList.remove('open'); }
   function fillFromCreds() {
+    if (!rfb) { setStatus('err', 'rfb not ready'); return; }
     var fields = [
       { value: creds.server,   allowShift: true },
       { value: creds.login,    allowShift: true },
@@ -478,14 +423,14 @@ export const MOBILE_HTML = `<!DOCTYPE html>
     var i = 0;
     function next() {
       if (i >= fields.length) {
-        setTimeout(function () { sendKeyName('enter'); }, 200);
+        setTimeout(function () { sendKey(NAMED.enter); }, 200);
         return;
       }
       var f = fields[i++];
       if (!f.value) { next(); return; }
       typeString(f.value, function () {
         if (i < fields.length) {
-          setTimeout(function () { sendKeyName('tab'); next(); }, 150);
+          setTimeout(function () { sendKey(NAMED.tab); next(); }, 150);
         } else {
           next();
         }
@@ -498,7 +443,7 @@ export const MOBILE_HTML = `<!DOCTYPE html>
         if (j >= chars.length) { done(); return; }
         var c = chars[j++];
         if (/[A-Z]/.test(c)) {
-          sendKeyName('shift_L');
+          sendKey(NAMED.shift_L);
         }
         setTimeout(function () { pressKey(c.toLowerCase()); tick(); }, 35);
       }
@@ -507,37 +452,11 @@ export const MOBILE_HTML = `<!DOCTYPE html>
     next();
   }
 
-  function setZoom(z) {
-    zoom = Math.max(0.5, Math.min(3, z));
-    var canvas = screen.querySelector('canvas');
-    if (canvas) {
-      canvas.style.transform = 'scale(' + zoom + ')';
-      canvas.style.transformOrigin = '0 0';
-    }
-  }
-  function fit() {
-    var canvas = screen.querySelector('canvas');
-    if (!canvas) return;
-    var sw = screen.clientWidth, sh = screen.clientHeight;
-    var cw = canvas.width, ch = canvas.height;
-    if (!cw || !ch) return;
-    var z = Math.min(sw / cw, sh / ch);
-    setZoom(z);
-  }
-
   document.querySelectorAll('[data-key]').forEach(function (b) {
     b.addEventListener('click', function () { pressKey(b.dataset.key); });
   });
   document.querySelectorAll('[data-macro]').forEach(function (b) {
     b.addEventListener('click', function () { sendMacro(b.dataset.macro); });
-  });
-  document.querySelectorAll('[data-zoom]').forEach(function (b) {
-    b.addEventListener('click', function () {
-      var z = b.dataset.zoom;
-      if (z === 'in')  setZoom(zoom * 1.25);
-      else if (z === 'out') setZoom(zoom / 1.25);
-      else setZoom(parseFloat(z));
-    });
   });
   credbtn.addEventListener('click', openCreds);
   document.getElementById('credcancel').addEventListener('click', closeCreds);
@@ -558,13 +477,13 @@ export const MOBILE_HTML = `<!DOCTYPE html>
     fillFromCreds();
   });
   reloadbtn.addEventListener('click', function () {
-    if (rfb) rfb.disconnect();
-    setTimeout(connect, 200);
+    try { vncFrame.contentWindow.location.reload(); }
+    catch (e) { vncFrame.src = vncFrame.src; }
   });
-  fitbtn.addEventListener('click', fit);
-  window.addEventListener('resize', fit);
 
-  connect();
+  setTimeout(function () {
+    if (!rfb) setStatus('', 'waiting for MT5…');
+  }, 5000);
 })();
 </script>
 </body>
