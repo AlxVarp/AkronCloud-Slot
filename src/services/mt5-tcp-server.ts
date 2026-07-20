@@ -130,7 +130,7 @@ export class Mt5TcpServer {
   private pending = new Map<string, PendingCommand>();
   private ledger: Ledger;
   private resolveAccount: (brokerLogin: string) => AccountRow | undefined;
-  private onEvent?: (evt: ParsedEvent, account: AccountRow | undefined) => void;
+  public onEvent?: (evt: ParsedEvent, account: AccountRow | undefined) => void;
   private host: string;
   private port: number;
 
