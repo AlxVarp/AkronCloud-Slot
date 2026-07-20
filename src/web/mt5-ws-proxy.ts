@@ -1,5 +1,4 @@
 import type { FastifyInstance } from 'fastify';
-import websocket from '@fastify/websocket';
 import WebSocket from 'ws';
 import { log } from '../log.js';
 
@@ -25,7 +24,8 @@ import { log } from '../log.js';
  * client sees the KasmVNC RFB server directly.
  */
 export async function registerMt5WsProxy(app: FastifyInstance): Promise<void> {
-  await app.register(websocket);
+  // @fastify/websocket is already registered at app.ts boot.
+  // We just add our /mt5-ws route here.
   app.register(async (instance) => {
     instance.get('/mt5-ws', { websocket: true }, (socket, req) => {
       const client = socket;
