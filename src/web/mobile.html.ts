@@ -355,32 +355,30 @@ function connect() {
     // It is a no-op if the connector is not running.
     enableSyncButton();
     triggerSync('auto');
-  });
-  rfb.addEventListener('init', () => {
-    // Runs after RFB handshake but before framebuffer streams. Two
-    // shims to make the bundled KasmVNC fork usable from a minimal
-    // wrapper (which doesn't go through app/ui.js):
-    //   1. mouseButtonMapper is initialised to null and assigned
-    //      only by ui.js. Without this, every tap/scroll on the
-    //      canvas crashes in _handleMouse (rfb.js:2110) trying to
-    //      call .get() on null.
-    //   2. _handleSubscribeUnixRelay is called whenever the server
-    //      replies to a subscribe. KasmVNC's bundled printer.js
-    //      auto-subscribes to a 'printer' unix relay channel the
-    //      slot's Xvnc does NOT implement; the server replies with
-    //      status=0 "No such unix channel" and the fork logs Warn.
-    //      We don't use printer relay in the mobile wrapper, so
-    //      swallowing the message is correct. Without this the
-    //      console fills with harmless warnings.
+
+    // Bundle-without-UI shims. The KasmVNC fork used here relies on
+    // app/ui.js for two pieces of setup that the mobile wrapper
+    // does NOT use. Earlier I attached these to an 'init' event
+    // that the fork does not actually fire (no CustomEvent('init'
+    // anywhere in rfb.js - it only fires 'connect', 'disconnect',
+    // 'capabilities', 'securityfailure', 'clipboard', 'bell',
+    // 'inputlock*', 'screenregistered'), so the shims were never
+    // installed in v24 and both errors still fired. Installing them
+    // in 'connect' guarantees they run BEFORE initializePrinterRelay
+    // at rfb.js:3085 fires the SUBSCRIBE that produces the SUBSCRIBED
+    // reply, and BEFORE any mouse event can reach _handleMouse.
     if (!rfb.mouseButtonMapper) {
       const m = new MouseButtonMapper();
-      // Browser button -> Xvnc button (matches ui.js defaults).
+      // Browser button -> Xvnc button (matches ui.js defaults for
+      // XVNC_BUTTONS: 1/2/3 are left/middle/right).
       m.set(0, 1); m.set(1, 2); m.set(2, 3); m.set(3, 8); m.set(4, 9);
       rfb.mouseButtonMapper = m;
     }
     rfb._handleSubscribeUnixRelay = function () {
-      // Drain the 3-byte header + payload off the receive queue so
-      // the dispatcher stays in sync, but discard the payload.
+      // Drain the 2-byte header (status + len) and the payload off
+      // the receive queue so the WS message dispatcher stays in
+      // sync, but discard the payload - we do not use the printer
+      // relay and the slot's Xvnc does not implement it.
       if (this._sock && this._sock.rQlen && this._sock.rQlen() >= 2) {
         const status = this._sock.rQshift8();
         const len = this._sock.rQshift8();
