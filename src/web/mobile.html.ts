@@ -96,6 +96,17 @@ export const MOBILE_HTML = `<!DOCTYPE html>
       justify-content: center;
       align-items: center;
     }
+    /* RFB creates an inner <div> as its target wrapper, with
+       display:flex but no justify-content. Override so the canvas
+       is centered inside that wrapper too - otherwise it floats to
+       flex-start (left) and the rest of the visible area is black. */
+    #screen > div {
+      display: flex !important;
+      justify-content: center !important;
+      align-items: center !important;
+      width: 100% !important;
+      height: 100% !important;
+    }
     #screen canvas { display: block; transform-origin: 0 0; }
     #placeholder {
       position: absolute; inset: 0;
