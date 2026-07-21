@@ -84,34 +84,41 @@ export const MOBILE_HTML = `<!DOCTYPE html>
     /* Full-viewport canvas container. flex:1 absorbs everything below
        the slim topbar (no keyboard, no macros). RFB's autoscale
        (scaleViewport=true) writes inline style.width/height on the
-       canvas; we just center it in the remaining area with a
-       flexbox so the canvas never floats with black borders. */
+       canvas. We position the canvas absolutely with the standard
+       left/top:50% + transform:translate(-50%,-50%) trick - it
+       beats the flexbox gotcha around RFB's inline
+       margin:auto on the canvas. */
     #screen {
       flex: 1; min-height: 0;
       background: #000;
       position: relative;
       overflow: hidden;
       touch-action: none;
-      display: flex;
-      justify-content: center;
-      align-items: center;
     }
-    /* RFB creates an inner <div> as its target wrapper, with
-       display:flex but no justify-content. Override so the canvas
-       is centered inside that wrapper too - otherwise it floats to
-       flex-start (left) and the rest of the visible area is black. */
+    /* RFB creates an inner <div> as its target wrapper. We don't
+       need to fight its display:flex - we'll handle the canvas
+       itself with absolute positioning inside it. */
     #screen > div {
-      display: flex !important;
-      justify-content: center !important;
-      align-items: center !important;
+      position: relative !important;
       width: 100% !important;
       height: 100% !important;
     }
-    /* RFB's source sets canvas.style.margin='auto' in display.js, which
-       beats our flex centering on the wrapper (margin: auto on a flex
-       item overrides the parent justify-content). Override with
-       0 to neutralise and let the parent's center alignment win. */
-    #screen canvas { display: block; transform-origin: 0 0; margin: 0 !important; border: 2px solid red !important; }
+    /* Center the canvas inside the inner wrapper. Position absolute
+       + left/top:50% + translate(-50%,-50%) is the classic
+       bulletproof centering. We override RFB's inline
+       margin:auto which would otherwise win on a flex item. */
+    #screen canvas {
+      display: block !important;
+      transform-origin: 0 0 !important;
+      position: absolute !important;
+      top: 50% !important;
+      left: 50% !important;
+      margin: 0 !important;
+      transform: translate(-50%, -50%) !important;
+      max-width: 100% !important;
+      max-height: 100% !important;
+      border: 2px solid red !important;
+    }
     #screen > div { border: 2px solid lime !important; }
     #placeholder {
       position: absolute; inset: 0;
