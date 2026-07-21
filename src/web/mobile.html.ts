@@ -107,7 +107,11 @@ export const MOBILE_HTML = `<!DOCTYPE html>
       width: 100% !important;
       height: 100% !important;
     }
-    #screen canvas { display: block; transform-origin: 0 0; border: 2px solid red !important; }
+    /* RFB's source sets canvas.style.margin='auto' in display.js, which
+       beats our flex centering on the wrapper (margin: auto on a flex
+       item overrides the parent justify-content). Override with
+       0 to neutralise and let the parent's center alignment win. */
+    #screen canvas { display: block; transform-origin: 0 0; margin: 0 !important; border: 2px solid red !important; }
     #screen > div { border: 2px solid lime !important; }
     #placeholder {
       position: absolute; inset: 0;
