@@ -275,6 +275,49 @@ export const MOBILE_HTML = `<!DOCTYPE html>
 const { default: RFB } = await import('/vnc-static/core/rfb.js');
 const { default: MouseButtonMapper } = await import('/vnc-static/core/mousebuttonmapper.js');
 
+// Bundle-without-UI shims applied at the PROTOTYPE level (not the
+// instance) so they take effect for every RFB we ever instantiate,
+// regardless of timing. Two earlier attempts at per-instance shims
+// in v23/v24 were silently no-op because:
+//   - v23 added addEventListener('init', ...) but the fork never
+//     fires 'init' (no CustomEvent('init') anywhere in rfb.js).
+//   - v24/v25 added them to 'connect', which DOES fire - but the
+//     user kept seeing the errors, so something was racing the
+//     listener (cache, connect firing twice, etc.). Patching the
+//     prototype makes the fix unconditional.
+const _origHandleSubscribeUnixRelay = RFB.prototype._handleSubscribeUnixRelay;
+RFB.prototype._handleSubscribeUnixRelay = function () {
+  // Same drain semantics as _rQwait/_rQshiftStr so the message
+  // dispatcher stays in sync. We simply discard the payload.
+  if (!this._sock) return false;
+  // 2-byte header: status (1) + len (1)
+  if (this._sock.rQwait('UnixRelaySub header', 2, 1)) return false;
+  const status = this._sock.rQshift8();
+  const len = this._sock.rQshift8();
+  if (this._sock.rQwait('UnixRelaySub payload', len, 3)) return false;
+  this._sock.rQshiftStr(len);
+  // Returning false tells _normalMsg we're done with this message.
+  return false;
+};
+// Save the original _handleSubscribeUnixRelay for any caller that
+// wants to invoke it explicitly (none today, but useful for tests).
+RFB.prototype._origHandleSubscribeUnixRelay = _origHandleSubscribeUnixRelay;
+
+const _origHandleMouse = RFB.prototype._handleMouse;
+RFB.prototype._handleMouse = function (ev) {
+  // The bundled fork inits this.mouseButtonMapper to null and
+  // expects app/ui.js to assign it later. We don't use ui.js, so
+  // lazy-init a default mapper on the first mouse event. With
+  // this guard, every subsequent call has a populated mapper and
+  // never sees the "Cannot read property get of null" TypeError.
+  if (!this.mouseButtonMapper) {
+    const m = new MouseButtonMapper();
+    m.set(0, 1); m.set(1, 2); m.set(2, 3); m.set(3, 8); m.set(4, 9);
+    this.mouseButtonMapper = m;
+  }
+  return _origHandleMouse.call(this, ev);
+};
+
 const statusDot   = document.getElementById('status');
 const statusLabel = document.getElementById('statuslabel');
 const screen      = document.getElementById('screen');
@@ -355,38 +398,9 @@ function connect() {
     // It is a no-op if the connector is not running.
     enableSyncButton();
     triggerSync('auto');
-
-    // Bundle-without-UI shims. The KasmVNC fork used here relies on
-    // app/ui.js for two pieces of setup that the mobile wrapper
-    // does NOT use. Earlier I attached these to an 'init' event
-    // that the fork does not actually fire (no CustomEvent('init'
-    // anywhere in rfb.js - it only fires 'connect', 'disconnect',
-    // 'capabilities', 'securityfailure', 'clipboard', 'bell',
-    // 'inputlock*', 'screenregistered'), so the shims were never
-    // installed in v24 and both errors still fired. Installing them
-    // in 'connect' guarantees they run BEFORE initializePrinterRelay
-    // at rfb.js:3085 fires the SUBSCRIBE that produces the SUBSCRIBED
-    // reply, and BEFORE any mouse event can reach _handleMouse.
-    if (!rfb.mouseButtonMapper) {
-      const m = new MouseButtonMapper();
-      // Browser button -> Xvnc button (matches ui.js defaults for
-      // XVNC_BUTTONS: 1/2/3 are left/middle/right).
-      m.set(0, 1); m.set(1, 2); m.set(2, 3); m.set(3, 8); m.set(4, 9);
-      rfb.mouseButtonMapper = m;
-    }
-    rfb._handleSubscribeUnixRelay = function () {
-      // Drain the 2-byte header (status + len) and the payload off
-      // the receive queue so the WS message dispatcher stays in
-      // sync, but discard the payload - we do not use the printer
-      // relay and the slot's Xvnc does not implement it.
-      if (this._sock && this._sock.rQlen && this._sock.rQlen() >= 2) {
-        const status = this._sock.rQshift8();
-        const len = this._sock.rQshift8();
-        if (len > 0 && this._sock.rQlen() >= len) {
-          this._sock.rQshiftStr(len);
-        }
-      }
-    };
+    // mouseButtonMapper init and _handleSubscribeUnixRelay shim run
+    // at the prototype level (top of this <script>). Do NOT redo
+    // them here - they already apply for every RFB instance.
   });
   rfb.addEventListener('disconnect', (e) => {
     const why = e && e.detail && e.detail.reason ? ': ' + e.detail.reason : '';
