@@ -488,13 +488,43 @@ function fit() {
   //      feedback that the click did something. On a perfectly-fitted
   //      canvas #1 above produces the same final result as before,
   //      so the click would otherwise feel dead.
+  //   4. Re-apply our JS-level canvas centering. CSS !important with
+  //      RFB's inline margin:auto had been getting in a CSS
+  //      specificity war. Setting the inline style after RFB finished
+  //      its own setup is robust and bulletproof.
   if (!rfb) return;
   setStatus('ok', 'refitting + refreshing framebuffer…');
   try { rfb._updateScale(); } catch (e) { /* defensive */ }
   try {
     RFB.messages.fbUpdateRequest(rfb._sock, false, 0, 0, rfb._fbWidth, rfb._fbHeight);
   } catch (e) { /* defensive */ }
+  applyCanvasCentering();
   setTimeout(() => setStatus('ok', 'refreshed (' + (rfb._fbWidth || 0) + 'x' + (rfb._fbHeight || 0) + ')'), 350);
+}
+
+// Force the canvas to be centered inside RFB's wrapper <div>. RFB
+// inlines display:flex + margin:auto on the canvas, which wins
+// over our flex/justify-content author CSS via inline style
+// specificity. Setting the inline style here (after RFB has run
+// its constructor and connected) is the only thing that reliably
+// works. Called once on connect (via fit() in the connect
+// listener) and any time fit() runs.
+function applyCanvasCentering() {
+  const rfbScreen = screen.querySelector('div');
+  if (rfbScreen) {
+    rfbScreen.style.position = 'relative';
+    rfbScreen.style.width = '100%';
+    rfbScreen.style.height = '100%';
+    rfbScreen.style.display = 'block';
+  }
+  const canvas = screen.querySelector('canvas');
+  if (canvas) {
+    canvas.style.position = 'absolute';
+    canvas.style.top = '50%';
+    canvas.style.left = '50%';
+    canvas.style.margin = '0';
+    canvas.style.transform = 'translate(-50%, -50%)';
+  }
 }
 
 const XK = {
