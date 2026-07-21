@@ -543,20 +543,20 @@ const NAMED = {
   'BackSpace': 0xFF08, 'shift_L': 0xFFE1, 'Control_L': 0xFFE3,
 };
 
-function sendKeyDown(keysym) {
+function sendKeyDown(keysym, code) {
   if (!rfb) return;
-  try { rfb.sendKey(keysym, null, true); } catch (e) {}
+  try { rfb.sendKey(keysym, code || null, true); } catch (e) {}
 }
-function sendKeyUp(keysym) {
+function sendKeyUp(keysym, code) {
   if (!rfb) return;
-  try { rfb.sendKey(keysym, null, false); } catch (e) {}
+  try { rfb.sendKey(keysym, code || null, false); } catch (e) {}
 }
-function sendKey(keysym) {
+function sendKey(keysym, code) {
   // Convenience: tap (down + up). The two halves above are what
   // pressKey uses for proper modifier handling (Shift down before
   // the letter, Shift up after).
-  sendKeyDown(keysym);
-  sendKeyUp(keysym);
+  sendKeyDown(keysym, code);
+  sendKeyUp(keysym, code);
 }
 function sendChar(ch) {
   var base = ch.toLowerCase();
@@ -567,32 +567,43 @@ function sendChar(ch) {
 function pressKey(ch) {
   if (ch === 'shift') {
     // Sticky shift: tap the key once, next letter is uppercase,
-    // then the shift state auto-clears. We also send Shift
-    // down+up to MT5 so any modifier-aware input field stays in
-    // sync (e.g. text fields that use shift for selection).
+    // then the shift state auto-clears. We pass 'ShiftLeft' as
+    // the KeyboardEvent.code so RFB looks up the scancode (0x2A
+    // per XtScancode) and sends a QEMU Extended Key Event - the
+    // scancode path is what KasmVNC actually translates into a
+    // real Shift modifier; keysym-only often gets silently
+    // swallowed by the X server.
     shift = !shift;
     document.querySelectorAll('[data-key="shift"]').forEach((b) => {
       b.style.opacity = shift ? '1' : '0.6';
     });
-    sendKey(NAMED.shift_L);
+    sendKey(NAMED.shift_L, 'ShiftLeft');
     return;
   }
   // When shift is sticky, hold Shift down BEFORE the key and
-  // release AFTER. The keysym alone (e.g. XK_a) gets the
-  // lowercase code, but with Shift held the input layer
-  // translates to uppercase.
+  // release AFTER. Send the scancode path for Shift so the
+  // modifier actually takes effect on the X server side.
   var wasShifted = shift;
-  if (wasShifted) sendKeyDown(NAMED.shift_L);
+  if (wasShifted) {
+    sendKeyDown(NAMED.shift_L, 'ShiftLeft');
+    // Small wait so the X server processes the Shift down before
+    // the letter press. RFB queues WS messages and the server
+    // processes them in order, but some KasmVNC versions coalesce
+    // or drop modifier events that arrive in the same tick as the
+    // letter. A 5ms gap avoids the race.
+    const t0 = performance.now();
+    while (performance.now() - t0 < 5) {}
+  }
 
-  if (ch === 'backspace') { sendKey(NAMED.BackSpace); }
-  else if (ch === 'enter')    { sendKey(NAMED.enter); }
-  else if (ch === 'space')    { sendKey(XK[' ']); }
+  if (ch === 'backspace') { sendKey(NAMED.BackSpace, 'Backspace'); }
+  else if (ch === 'enter')    { sendKey(NAMED.enter, 'Enter'); }
+  else if (ch === 'space')    { sendKey(XK[' '], 'Space'); }
   else if (ch === '-')        { sendChar('-'); }
   else if (ch === '.')        { sendChar('.'); }
   else                        { sendChar(wasShifted ? ch.toUpperCase() : ch); }
 
   if (wasShifted) {
-    sendKeyUp(NAMED.shift_L);
+    sendKeyUp(NAMED.shift_L, 'ShiftLeft');
     shift = false;
     document.querySelectorAll('[data-key="shift"]').forEach((b) => {
       b.style.opacity = '0.6';
