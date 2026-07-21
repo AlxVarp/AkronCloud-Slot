@@ -81,14 +81,20 @@ export const MOBILE_HTML = `<!DOCTYPE html>
     }
     #topbar button.primary:disabled { opacity: .5; }
 
-    /* Full-viewport canvas container. flex:1 so it absorbs everything
-       below the slim topbar (no keyboard, no macros). */
+    /* Full-viewport canvas container. flex:1 absorbs everything below
+       the slim topbar (no keyboard, no macros). RFB's autoscale
+       (scaleViewport=true) writes inline style.width/height on the
+       canvas; we just center it in the remaining area with a
+       flexbox so the canvas never floats with black borders. */
     #screen {
       flex: 1; min-height: 0;
       background: #000;
       position: relative;
       overflow: hidden;
       touch-action: none;
+      display: flex;
+      justify-content: center;
+      align-items: center;
     }
     #screen canvas { display: block; transform-origin: 0 0; }
     #placeholder {
@@ -414,21 +420,20 @@ function connect() {
 }
 
 function fit() {
+  // Force RFB's autoscale to re-evaluate against the current #screen
+  // size. RFB owns the canvas inline width/height (Display._rescale
+  // writes them based on the container's offsetWidth/offsetHeight);
+  // we do NOT touch them manually, we just nudge the dispatcher.
+  // Earlier versions applied position:absolute + translate(-50%, -50%)
+  // + scale() here, which made the canvas float in the middle of the
+  // screen div and left #screen's background-black visible in the
+  // empty around it. With #screen as a flex centainer and
+  // rfb.scaleViewport=true, we don't need to scale or position
+  // anything ourselves.
   if (!rfb) return;
-  // RFB owns its own canvas now (it lives inside rfb._screen which is
-  // appended to our #screen div). Use its natural dimensions (set by RFB
-  // to match the desktop) and CSS-scale to fit.
-  const canvas = screen.querySelector('canvas');
-  if (!canvas) return;
-  const sw = screen.clientWidth, sh = screen.clientHeight;
-  const cw = canvas.width, ch = canvas.height;
-  if (!cw || !ch) return;
-  const z = Math.min(sw / cw, sh / ch);
-  canvas.style.transformOrigin = '0 0';
-  canvas.style.transform = 'translate(-50%, -50%) scale(' + z + ')';
-  canvas.style.position = 'absolute';
-  canvas.style.left = '50%';
-  canvas.style.top = '50%';
+  // Resize observer path: tell RFB to recompute. The bundled code
+  // listens to window 'resize'; we dispatch the same event.
+  window.dispatchEvent(new Event('resize'));
 }
 
 const XK = {
