@@ -58,7 +58,7 @@ export default class Display {
             throw new Error("no getContext method");
         }
 
-        this._targetCtx = this._target.getContext('2d');
+        this._targetCtx = this._target.getContext('2d', { willReadFrequently: true });
 
         Log.Debug("User Agent: " + navigator.userAgent);
 
@@ -115,7 +115,7 @@ export default class Display {
         //optional offscreen canvas
         this._enableCanvasBuffer = false;
         this._backbuffer = document.createElement('canvas');
-        this._drawCtx = this._backbuffer.getContext('2d');
+        this._drawCtx = this._backbuffer.getContext('2d', { willReadFrequently: true });
         this._damageBounds = { left: 0, top: 0, right: this._backbuffer.width, bottom: this._backbuffer.height };
 
         // ===== EVENT HANDLERS =====
