@@ -420,20 +420,18 @@ function connect() {
 }
 
 function fit() {
-  // Force RFB's autoscale to re-evaluate against the current #screen
-  // size. RFB owns the canvas inline width/height (Display._rescale
-  // writes them based on the container's offsetWidth/offsetHeight);
-  // we do NOT touch them manually, we just nudge the dispatcher.
-  // Earlier versions applied position:absolute + translate(-50%, -50%)
-  // + scale() here, which made the canvas float in the middle of the
-  // screen div and left #screen's background-black visible in the
-  // empty around it. With #screen as a flex centainer and
-  // rfb.scaleViewport=true, we don't need to scale or position
-  // anything ourselves.
+  // Call RFB's internal _updateScale() directly. The first version
+  // of this (v27) dispatched a window 'resize' event to do the same
+  // thing indirectly - but our own window 'resize' listener below
+  // was calling fit(), which created an infinite loop on the first
+  // click of the Resize button. Direct call avoids that.
+  //
+  // RFB._updateScale() re-evaluates Display.autoscale against the
+  // current container width/height and writes new style.width /
+  // style.height on the canvas. With #screen being a flex container
+  // that already centers its content, the canvas self-positions.
   if (!rfb) return;
-  // Resize observer path: tell RFB to recompute. The bundled code
-  // listens to window 'resize'; we dispatch the same event.
-  window.dispatchEvent(new Event('resize'));
+  try { rfb._updateScale(); } catch (e) { /* defensive */ }
 }
 
 const XK = {
@@ -570,17 +568,15 @@ document.getElementById('credfill').addEventListener('click', () => {
 });
 
 // ── Resize button ───────────────────────────────────────────
-// Calls fit() to recompute the CSS scale + translate so the VNC
-// canvas fills the current #screen area. Also auto-runs on
-// window resize / orientationchange so rotating the phone or
-// showing/hiding the iOS keyboard re-flows the canvas without
-// needing a manual press.
+// Re-runs RFB's autoscale. RFB also has its own window 'resize'
+// listener that triggers _updateScale, but we don't subscribe to
+// it here - doing so caused an infinite dispatch loop in v27 (the
+// listener called fit, which dispatched 'resize', which called the
+// listener again).
 const resizebtn = document.getElementById('resizebtn');
 resizebtn.addEventListener('click', () => {
   fit();
 });
-window.addEventListener('resize', fit);
-window.addEventListener('orientationchange', fit);
 
 // ── Sync button ──────────────────────────────────────────────
 // /internal/sync is a same-origin, no-JWT endpoint that re-validates
