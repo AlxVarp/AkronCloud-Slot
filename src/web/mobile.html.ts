@@ -81,13 +81,10 @@ export const MOBILE_HTML = `<!DOCTYPE html>
     }
     #topbar button.primary:disabled { opacity: .5; }
 
-    /* Full-viewport canvas container. flex:1 absorbs everything below
-       the slim topbar (no keyboard, no macros). RFB's autoscale
-       (scaleViewport=true) writes inline style.width/height on the
-       canvas. We position the canvas absolutely with the standard
-       left/top:50% + transform:translate(-50%,-50%) trick - it
-       beats the flexbox gotcha around RFB's inline
-       margin:auto on the canvas. */
+    /* Full-viewport canvas container. The canvas inside is
+       position:absolute + transform-centered via JS (see
+       applyCanvasCentering), not via CSS - RFB's inline display:flex
+       + margin:auto on the canvas beat author CSS !important rules. */
     #screen {
       flex: 1; min-height: 0;
       background: #000;
@@ -95,31 +92,7 @@ export const MOBILE_HTML = `<!DOCTYPE html>
       overflow: hidden;
       touch-action: none;
     }
-    /* RFB creates an inner <div> as its target wrapper. We don't
-       need to fight its display:flex - we'll handle the canvas
-       itself with absolute positioning inside it. */
-    #screen > div {
-      position: relative !important;
-      width: 100% !important;
-      height: 100% !important;
-    }
-    /* Center the canvas inside the inner wrapper. Position absolute
-       + left/top:50% + translate(-50%,-50%) is the classic
-       bulletproof centering. We override RFB's inline
-       margin:auto which would otherwise win on a flex item. */
-    #screen canvas {
-      display: block !important;
-      transform-origin: 0 0 !important;
-      position: absolute !important;
-      top: 50% !important;
-      left: 50% !important;
-      margin: 0 !important;
-      transform: translate(-50%, -50%) !important;
-      max-width: 100% !important;
-      max-height: 100% !important;
-      border: 2px solid red !important;
-    }
-    #screen > div { border: 2px solid lime !important; }
+    #screen canvas { display: block; transform-origin: 0 0; }
     #placeholder {
       position: absolute; inset: 0;
       display: flex; align-items: center; justify-content: center;
@@ -441,8 +414,17 @@ function connect() {
   //     fixed 414x896 canvas down to fit the phone viewport, with
   //     letterbox centering via the flex container.
   rfb.resizeSession = false;
+  // We pick 414x500 (portrait iPhone width, shorter height) instead
+  // of the Xvnc cmdline 1024x768 or a full 414x896. The shorter
+  // height means the chart window in the visible canvas is bigger
+  // relative to the phone viewport - autoscale fits the desktop
+  // to the phone width (no horizontal letterbox) while keeping the
+  // chart at a comfortable aspect. The previous 414x896 was
+  // correct in count of pixels but made the visible chart look
+  // small on the phone because the empty MT5 desktop below
+  // the chart window ate half the canvas.
   rfb.forcedResolutionX = 414;
-  rfb.forcedResolutionY = 896;
+  rfb.forcedResolutionY = 500;
   rfb.scaleViewport = true;
   rfb.clipViewport = true;
   rfb.qualityLevel = 6;
