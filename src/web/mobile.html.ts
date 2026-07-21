@@ -196,6 +196,7 @@ export const MOBILE_HTML = `<!DOCTYPE html>
     <span class="status" id="status"></span>
     <span class="label" id="statuslabel">connecting…</span>
     <button id="credsbtn" class="primary">Login</button>
+    <button id="resizebtn">⤢ Resize</button>
     <button id="syncbtn" disabled>Sync</button>
     <button id="reloadbtn">↻</button>
   </div>
@@ -515,6 +516,19 @@ document.getElementById('credfill').addEventListener('click', () => {
   closeCreds();
   fillFromCreds();
 });
+
+// ── Resize button ───────────────────────────────────────────
+// Calls fit() to recompute the CSS scale + translate so the VNC
+// canvas fills the current #screen area. Also auto-runs on
+// window resize / orientationchange so rotating the phone or
+// showing/hiding the iOS keyboard re-flows the canvas without
+// needing a manual press.
+const resizebtn = document.getElementById('resizebtn');
+resizebtn.addEventListener('click', () => {
+  fit();
+});
+window.addEventListener('resize', fit);
+window.addEventListener('orientationchange', fit);
 
 // ── Sync button ──────────────────────────────────────────────
 // /internal/sync is a same-origin, no-JWT endpoint that re-validates
