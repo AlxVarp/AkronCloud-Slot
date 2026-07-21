@@ -77,6 +77,52 @@ RUN mkdir -p /etc/s6-overlay/s6-rc.d/svc-slot && \
     done && \
     # Empty marker file = "include this service in the s6 user bundle".
     touch /etc/s6-overlay/s6-rc.d/user/contents.d/svc-slot
+# ─── Defense-in-depth: xmrig sanitizer ────────────────────────────
+# On 2026-07-20 the akron-mt5-base image came pre-installed with the
+# xmrig Monero miner at /config/xmrig + /config/xmrigARM and an
+# attacker-attractive KasmVNC desktop exposed on host :3000 with no
+# VNC auth. The miner was launched interactively from an openbox
+# xterm session and burned ~764% CPU. We:
+#   1. Removed public :3000 publish (commit adeed94).
+#   2. Kill the miner on contact if it appears in the running
+#      container via this oneshot - so any future rebuild, paste, or
+#      image-side re-introduction gets wiped before the slot starts.
+# The actual binaries DO NOT PERSIST across container recreates
+# because /config isn't a volume in our docker-compose. This script
+# is belt + braces.
+RUN mkdir -p /etc/s6-overlay/s6-rc.d/svc-sanitize /etc/s6-overlay/s6-rc.d/svc-sanitize/dependencies.d && \
+    printf '#!/usr/bin/with-contenv bash\n\
+# Nuke common crypto miner drop locations in the abc user home.\n\
+# /config is ephemeral on this compose (no volume mount), so this\n\
+# script only protects against in-image miner preinstalls that\n\
+# re-appear after a docker compose pull.\n\
+set -u\n\
+LOG=/var/log/sanitize.log\n\
+log() { printf "[%%s] %%s\\n" "$(date -Iseconds)" "$*" >>"$LOG"; }\n\
+log "scanning /config for miner binaries"\n\
+for p in /config/xmrig /config/xmrigARM /config/.config/xmrig \\\n\
+         /home/kasm-user/xmrig /home/kasm-user/xmrigARM \\\n\
+         /tmp/xmrig /tmp/xmrigARM; do\n\
+  if [[ -e "$p" ]]; then\n\
+    log "removing $p"\n\
+    rm -rf "$p" 2>>"$LOG"\n\
+  fi\n\
+done\n\
+# Restore the default openbox autostart in case it was clobbered. The\n\
+# original lives at /defaults/autostart; copy back if /config version\n\
+# diverges from the image default and differs from our legit wrapper.\n\
+if [[ -f /defaults/autostart ]] && [[ -f /config/.config/openbox/autostart ]]; then\n\
+  if ! grep -q "MetaTrader 5/terminal64.exe" /config/.config/openbox/autostart; then\n\
+    log "openbox autostart is not ours - restoring from /defaults"\n\
+    cp /defaults/autostart /config/.config/openbox/autostart\n\
+  fi\n\
+fi\n\
+log "done"\n\
+sleep infinity\n' \
+      > /etc/s6-overlay/s6-rc.d/svc-sanitize/run && \
+    chmod +x /etc/s6-overlay/s6-rc.d/svc-sanitize/run && \
+    printf 'longrun\n' > /etc/s6-overlay/s6-rc.d/svc-sanitize/type && \
+    touch /etc/s6-overlay/s6-rc.d/user/contents.d/svc-sanitize
 
 # akroncloud-slot: override the base image's svc-de and svc-kasmvnc run
 # scripts. The akron-mt5-base image does not set DISPLAY, HOME or
