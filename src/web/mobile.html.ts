@@ -198,6 +198,7 @@ export const MOBILE_HTML = `<!DOCTYPE html>
     <span class="status" id="status"></span>
     <span class="label" id="statuslabel">connecting…</span>
     <button id="credsbtn" class="primary">Login</button>
+    <button id="resetbtn" title="Clear the currently-focused MT5 input field (Ctrl+A then Delete). Use after a wrong-credential entry.">Reset</button>
     <button id="syncbtn" disabled>Sync</button>
     <button id="reloadbtn">↻</button>
   </div>
@@ -678,6 +679,20 @@ document.getElementById('credcancel').addEventListener('click', closeCreds);
 document.getElementById('credfill').addEventListener('click', () => {
   closeCreds();
   fillFromCreds();
+});
+// Topbar Reset = sends Ctrl+A then Delete into the currently-focused
+// MT5 input field. Same effect as the modal's "Reset MT5 input" but
+// reachable in 1 click without opening the modal.
+document.getElementById('resetbtn').addEventListener('click', () => {
+  if (!rfb) { setStatus('err', 'rfb not ready'); return; }
+  setStatus('ok', 'clearing focused MT5 field…');
+  sendKeyDown(NAMED.Control_L);
+  sendKeyDown(0x61); // XK_a
+  sendKeyUp(0x61);
+  sendKeyUp(NAMED.Control_L);
+  sendKeyDown(0xFFFF); // XK_Delete
+  sendKeyUp(0xFFFF);
+  setStatus('ok', 'focused MT5 field cleared');
 });
 
 // ── Custom text + recovery (no creds match / type-again) ────
