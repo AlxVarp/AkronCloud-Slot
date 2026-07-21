@@ -202,7 +202,6 @@ export const MOBILE_HTML = `<!DOCTYPE html>
     <span class="status" id="status"></span>
     <span class="label" id="statuslabel">connecting…</span>
     <button id="credsbtn" class="primary">Login</button>
-    <button id="resizebtn">⤢ Resize</button>
     <button id="syncbtn" disabled>Sync</button>
     <button id="reloadbtn">↻</button>
   </div>
@@ -482,8 +481,21 @@ const NAMED = {
 };
 
 function sendKey(keysym) {
+  // RFB.sendKey signature is (keysym, code, down). code is the browser
+  // KeyboardEvent.code string (we do not have it here, so pass null) and
+  // down is the explicit down/up flag. If down is undefined, RFB
+  // recursively fires (true, false) for us, so we MUST set down
+  // explicitly to avoid double-firing.
+  //
+  // Previously we called rfb.sendKey(keysym, true) and
+  // rfb.sendKey(keysym, false) - both passed true/false as the code
+  // argument, leaving down undefined. Each call then recursively
+  // fired (true, false), giving us four events per button press.
   if (!rfb) return;
-  try { rfb.sendKey(keysym, true); rfb.sendKey(keysym, false); } catch (e) {}
+  try {
+    rfb.sendKey(keysym, null, true);
+    rfb.sendKey(keysym, null, false);
+  } catch (e) {}
 }
 function sendChar(ch) {
   var base = ch.toLowerCase();
@@ -593,17 +605,6 @@ document.getElementById('credcancel').addEventListener('click', closeCreds);
 document.getElementById('credfill').addEventListener('click', () => {
   closeCreds();
   fillFromCreds();
-});
-
-// ── Resize button ───────────────────────────────────────────
-// Re-runs RFB's autoscale. RFB also has its own window 'resize'
-// listener that triggers _updateScale, but we don't subscribe to
-// it here - doing so caused an infinite dispatch loop in v27 (the
-// listener called fit, which dispatched 'resize', which called the
-// listener again).
-const resizebtn = document.getElementById('resizebtn');
-resizebtn.addEventListener('click', () => {
-  fit();
 });
 
 // ── Sync button ──────────────────────────────────────────────
