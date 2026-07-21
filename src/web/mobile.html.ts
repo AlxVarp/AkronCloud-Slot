@@ -190,6 +190,14 @@ export const MOBILE_HTML = `<!DOCTYPE html>
     .kbrow button.accent { background: var(--accent); color: #fff; border-color: var(--accent); }
     .kbrow button.danger { background: var(--danger); color: #fff; border-color: var(--danger); }
     .kbrow button.muted { color: var(--muted); }
+    /* When sticky shift is active, render the letter keys as
+       uppercase so the user has visual feedback. The toggle is
+       applied to the whole #keyboard container via a class
+       set in JS, which keeps the change cheap (one DOM write
+       per shift toggle). */
+    #keyboard.shift-on .kbrow button {
+      text-transform: uppercase;
+    }
   </style>
 </head>
 <body>
@@ -559,9 +567,30 @@ function sendKey(keysym, code) {
   sendKeyUp(keysym, code);
 }
 function sendChar(ch) {
+  // Always go through the scancode path so the X server XKB layer
+  // resolves the key correctly. RFB code arg is the HTML
+  // KeyboardEvent.code string; with it, RFB looks up the scancode
+  // in XtScancode and sends a QEMU Extended Key Event. Without
+  // it, RFB falls back to a plain KeyEvent (keysym only) which
+  // some KasmVNC versions process incorrectly.
   var base = ch.toLowerCase();
   var keysym = XK[base] || XK[ch] || ch.charCodeAt(0);
-  sendKey(keysym);
+  var code = charToCode(ch);
+  sendKey(keysym, code);
+}
+
+// Map a printable character to its KeyboardEvent.code string. We
+// use this in every send so the QEMU Extended Key Event path is
+// used uniformly for both the modifier (Shift) and the letter.
+function charToCode(ch) {
+  if (/^[a-z]$/i.test(ch)) return 'Key' + ch.toUpperCase();
+  if (/^[0-9]$/.test(ch)) return 'Digit' + ch;
+  if (ch === ' ') return 'Space';
+  if (ch === '-') return 'Minus';
+  if (ch === '.') return 'Period';
+  if (ch === ',') return 'Comma';
+  if (ch === '/') return 'Slash';
+  return null;  // let sendKey try without code
 }
 
 function pressKey(ch) {
@@ -574,6 +603,12 @@ function pressKey(ch) {
     // real Shift modifier; keysym-only often gets silently
     // swallowed by the X server.
     shift = !shift;
+    // Visual feedback: the keyboard container gets a class
+    // that uppercases the letter buttons via CSS. One DOM write
+    // per shift toggle. Numbers and symbols are unaffected by
+    // text-transform:uppercase.
+    const kbd = document.getElementById('keyboard');
+    if (kbd) kbd.classList.toggle('shift-on', shift);
     document.querySelectorAll('[data-key="shift"]').forEach((b) => {
       b.style.opacity = shift ? '1' : '0.6';
     });
@@ -595,9 +630,20 @@ function pressKey(ch) {
     while (performance.now() - t0 < 5) {}
   }
 
-  if (ch === 'backspace') { sendKey(NAMED.BackSpace, 'Backspace'); }
-  else if (ch === 'enter')    { sendKey(NAMED.enter, 'Enter'); }
-  else if (ch === 'space')    { sendKey(XK[' '], 'Space'); }
+  // Use the scancode path uniformly for every key, including
+  // backspace / enter / space / letters / digits / symbols. The
+  // previous version sent those with code=null, which falls back
+  // to a plain KeyEvent - on KasmVNC that's a less reliable path
+  // than QEMU Extended Key Event.
+  var code = null;
+  if (ch === 'backspace') code = 'Backspace';
+  else if (ch === 'enter')    code = 'Enter';
+  else if (ch === 'space')    code = 'Space';
+  else                          code = charToCode(ch);
+
+  if (ch === 'backspace') { sendKey(NAMED.BackSpace, code); }
+  else if (ch === 'enter')    { sendKey(NAMED.enter, code); }
+  else if (ch === 'space')    { sendKey(XK[' '], code); }
   else if (ch === '-')        { sendChar('-'); }
   else if (ch === '.')        { sendChar('.'); }
   else                        { sendChar(wasShifted ? ch.toUpperCase() : ch); }
