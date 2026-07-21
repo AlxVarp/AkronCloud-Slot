@@ -282,6 +282,20 @@ export const MOBILE_HTML = `<!DOCTYPE html>
       <button type="button" class="ghost" id="credfill">Fill</button>
       <button type="submit">Save &amp; Fill</button>
     </div>
+    <hr style="border: 0; border-top: 1px solid var(--border); margin: 16px 0 8px;">
+    <h2 style="font-size: 14px; margin-top: 0;">Custom text</h2>
+    <p style="color: var(--muted); margin: 0 0 8px; font-size: 12px;">
+      Types into whatever MT5 field is currently focused. Useful for
+      one-off strings (server URLs, account notes, ad-hoc login
+      fixes). Characters are sent one at a time at 30ms each.
+    </p>
+    <textarea id="f_custom" rows="3" placeholder="e.g. Demo-Deriv-01 or a long server name"
+      style="font-family: ui-monospace, monospace; font-size: 13px; resize: vertical;"></textarea>
+    <div class="row">
+      <button type="button" class="ghost" id="credtypecustom">Type custom</button>
+      <button type="button" class="ghost" id="credresetmt5">Reset MT5 input</button>
+      <button type="button" class="ghost" id="credclearstored">Clear saved</button>
+    </div>
   </form>
 </div>
 
@@ -528,22 +542,20 @@ const NAMED = {
   'BackSpace': 0xFF08, 'shift_L': 0xFFE1, 'Control_L': 0xFFE3,
 };
 
-function sendKey(keysym) {
-  // RFB.sendKey signature is (keysym, code, down). code is the browser
-  // KeyboardEvent.code string (we do not have it here, so pass null) and
-  // down is the explicit down/up flag. If down is undefined, RFB
-  // recursively fires (true, false) for us, so we MUST set down
-  // explicitly to avoid double-firing.
-  //
-  // Previously we called rfb.sendKey(keysym, true) and
-  // rfb.sendKey(keysym, false) - both passed true/false as the code
-  // argument, leaving down undefined. Each call then recursively
-  // fired (true, false), giving us four events per button press.
+function sendKeyDown(keysym) {
   if (!rfb) return;
-  try {
-    rfb.sendKey(keysym, null, true);
-    rfb.sendKey(keysym, null, false);
-  } catch (e) {}
+  try { rfb.sendKey(keysym, null, true); } catch (e) {}
+}
+function sendKeyUp(keysym) {
+  if (!rfb) return;
+  try { rfb.sendKey(keysym, null, false); } catch (e) {}
+}
+function sendKey(keysym) {
+  // Convenience: tap (down + up). The two halves above are what
+  // pressKey uses for proper modifier handling (Shift down before
+  // the letter, Shift up after).
+  sendKeyDown(keysym);
+  sendKeyUp(keysym);
 }
 function sendChar(ch) {
   var base = ch.toLowerCase();
@@ -553,20 +565,33 @@ function sendChar(ch) {
 
 function pressKey(ch) {
   if (ch === 'shift') {
+    // Sticky shift: tap the key once, next letter is uppercase,
+    // then the shift state auto-clears. We also send Shift
+    // down+up to MT5 so any modifier-aware input field stays in
+    // sync (e.g. text fields that use shift for selection).
     shift = !shift;
     document.querySelectorAll('[data-key="shift"]').forEach((b) => {
       b.style.opacity = shift ? '1' : '0.6';
     });
+    sendKey(NAMED.shift_L);
     return;
   }
-  if (ch === 'backspace') { sendKey(NAMED.BackSpace); shift = false; return; }
-  if (ch === 'enter')    { sendKey(NAMED.enter);                return; }
-  if (ch === 'space')    { sendKey(XK[' ']);                    return; }
-  if (ch === '-')        { sendChar('-');                       return; }
-  if (ch === '.')        { sendChar('.');                       return; }
-  const out = shift ? ch.toUpperCase() : ch;
-  sendChar(out);
-  if (shift) {
+  // When shift is sticky, hold Shift down BEFORE the key and
+  // release AFTER. The keysym alone (e.g. XK_a) gets the
+  // lowercase code, but with Shift held the input layer
+  // translates to uppercase.
+  var wasShifted = shift;
+  if (wasShifted) sendKeyDown(NAMED.shift_L);
+
+  if (ch === 'backspace') { sendKey(NAMED.BackSpace); }
+  else if (ch === 'enter')    { sendKey(NAMED.enter); }
+  else if (ch === 'space')    { sendKey(XK[' ']); }
+  else if (ch === '-')        { sendChar('-'); }
+  else if (ch === '.')        { sendChar('.'); }
+  else                        { sendChar(wasShifted ? ch.toUpperCase() : ch); }
+
+  if (wasShifted) {
+    sendKeyUp(NAMED.shift_L);
     shift = false;
     document.querySelectorAll('[data-key="shift"]').forEach((b) => {
       b.style.opacity = '0.6';
@@ -654,6 +679,59 @@ document.getElementById('credfill').addEventListener('click', () => {
   closeCreds();
   fillFromCreds();
 });
+
+// ── Custom text + recovery (no creds match / type-again) ────
+// Type whatever's in the #f_custom textarea into whatever MT5
+// field is currently focused. Each char at 30ms, like fillFromCreds.
+function typeCustomToMT5() {
+  if (!rfb) { setStatus('err', 'rfb not ready'); return; }
+  const text = document.getElementById('f_custom').value || '';
+  if (!text) { setStatus('err', 'custom text is empty'); return; }
+  closeCreds();
+  setStatus('ok', 'typing custom into MT5…');
+  let i = 0;
+  function tick() {
+    if (i >= text.length) { setStatus('ok', 'typed custom (' + text.length + ' chars)'); return; }
+    pressKey(text[i]);
+    i++;
+    setTimeout(tick, 30);
+  }
+  tick();
+}
+
+// Select-all + Delete in the currently-focused MT5 field. Useful
+// when the broker login errored and the user wants to retype -
+// they click the field, click this, and the field is empty.
+function resetMT5Input() {
+  if (!rfb) { setStatus('err', 'rfb not ready'); return; }
+  closeCreds();
+  setStatus('ok', 'clearing focused MT5 field…');
+  // Ctrl + A (select all), then Delete.
+  sendKeyDown(NAMED.Control_L);
+  sendKeyDown(0x61); // XK_a
+  sendKeyUp(0x61);
+  sendKeyUp(NAMED.Control_L);
+  sendKeyDown(0xFFFF); // XK_Delete
+  sendKeyUp(0xFFFF);
+  setStatus('ok', 'focused MT5 field cleared');
+}
+
+// Wipe stored creds and the modal's inputs. Useful if the user
+// made a typo in the modal and wants to start over without
+// closing the browser.
+function clearStoredCreds() {
+  try { localStorage.removeItem('akron.creds.v1'); } catch (e) {}
+  creds = {};
+  document.getElementById('f_server').value = '';
+  document.getElementById('f_login').value = '';
+  document.getElementById('f_password').value = '';
+  document.getElementById('f_investor').value = '';
+  document.getElementById('f_custom').value = '';
+  setStatus('ok', 'cleared saved creds + modal inputs');
+}
+document.getElementById('credtypecustom').addEventListener('click', typeCustomToMT5);
+document.getElementById('credresetmt5').addEventListener('click', resetMT5Input);
+document.getElementById('credclearstored').addEventListener('click', clearStoredCreds);
 
 // ── Sync button ──────────────────────────────────────────────
 // /internal/sync is a same-origin, no-JWT endpoint that re-validates
