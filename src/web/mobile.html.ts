@@ -420,18 +420,27 @@ function connect() {
 }
 
 function fit() {
-  // Call RFB's internal _updateScale() directly. The first version
-  // of this (v27) dispatched a window 'resize' event to do the same
-  // thing indirectly - but our own window 'resize' listener below
-  // was calling fit(), which created an infinite loop on the first
-  // click of the Resize button. Direct call avoids that.
-  //
-  // RFB._updateScale() re-evaluates Display.autoscale against the
-  // current container width/height and writes new style.width /
-  // style.height on the canvas. With #screen being a flex container
-  // that already centers its content, the canvas self-positions.
+  // What this does:
+  //   1. Recompute the canvas pixel-fit against the current #screen
+  //      size via Display.autoscale (RFB owns the canvas style.width
+  //      / style.height). This is what the bundled UI does on window
+  //      'resize'.
+  //   2. Re-request a full (non-incremental) framebuffer update from
+  //      KasmVNC so any stale pixels get redrawn. Without this, RFB
+  //      won't ask for new pixels unless the server pushes them, and
+  //      some state (e.g. recovering from a 'disconnected' that
+  //      re-connected with gaps) can stay stale visually.
+  //   3. Briefly flip the topbar label so the user gets explicit
+  //      feedback that the click did something. On a perfectly-fitted
+  //      canvas #1 above produces the same final result as before,
+  //      so the click would otherwise feel dead.
   if (!rfb) return;
+  setStatus('ok', 'refitting + refreshing framebuffer…');
   try { rfb._updateScale(); } catch (e) { /* defensive */ }
+  try {
+    RFB.messages.fbUpdateRequest(rfb._sock, false, 0, 0, rfb._fbWidth, rfb._fbHeight);
+  } catch (e) { /* defensive */ }
+  setTimeout(() => setStatus('ok', 'refreshed (' + (rfb._fbWidth || 0) + 'x' + (rfb._fbHeight || 0) + ')'), 350);
 }
 
 const XK = {
