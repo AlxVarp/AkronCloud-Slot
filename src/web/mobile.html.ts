@@ -388,9 +388,28 @@ function connect() {
   // Apply KasmVNC defaults that match the bundled UI. resizeSession,
   // clipViewport, qualityLevel, etc. are not read from the options
   // object - they're properties set after construction.
-  rfb.resizeSession = true;          // Match Xvnc -geometry 1024x768 client-side
-  rfb.scaleViewport = true;          // CSS scale the canvas to fit #screen
-  rfb.clipViewport = true;           // Don't draw outside #screen
+  //
+  // For the mobile wrapper we lock the desktop to a portrait
+  // phone-friendly size. Earlier we used resizeSession=true which
+  // made RFB send SetDesktopSize on every window resize event
+  // (rotation, iOS keyboard, viewport resize). Each user with a
+  // different sized browser ended up leaving Xvnc resized to a
+  // weird in-between value (603x885, 1920x920, etc.) which made
+  // the MT5 chart tiny in the live phone.
+  //
+  // We now:
+  //   - disable resizeSession so the server DOES NOT renegotiate
+  //     on viewport changes (the slot stays at one stable size)
+  //   - force the desktop to 414x896 (portrait iPhone), which
+  //     RFB negotiates once on init via _requestRemoteResize
+  //   - keep scaleViewport+clipViewport so the client scales the
+  //     fixed 414x896 canvas down to fit the phone viewport, with
+  //     letterbox centering via the flex container.
+  rfb.resizeSession = false;
+  rfb.forcedResolutionX = 414;
+  rfb.forcedResolutionY = 896;
+  rfb.scaleViewport = true;
+  rfb.clipViewport = true;
   rfb.qualityLevel = 6;
   rfb.compressionLevel = 2;
   rfb.addEventListener('connect', () => {
