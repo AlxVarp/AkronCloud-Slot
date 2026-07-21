@@ -6,7 +6,7 @@ import { log } from './log.js';
 import { openAndMigrate } from './db/migrate.js';
 import { accountsRepo, type AccountRow } from './db/index.js';
 import { restRoutes } from './api/rest.js';
-import { wsRoutes, startConnectorStream } from './api/ws.js';
+import { wsRoutes } from './api/ws.js';
 import { internalRoutes } from './api/internal.js';
 import { registerMobileRoutes } from './web/mobile.js';
 import { encrypt, decrypt } from './crypto.js';
@@ -132,11 +132,6 @@ export async function buildApp(cfg: AppConfig): Promise<FastifyInstance> {
       log.info({ evt: 'login_detected' }, 'slot transitioned to operational');
     },
   });
-
-  // Start the per-account connector stream. Persists fills into the
-  // ledger so /v1/fills and /v1/positions see broker activity
-  // whether or not a WS client is currently subscribed.
-  startConnectorStream(deps);
 
   // Expose the slot lifecycle state for the /v1/state endpoint.
   // We decorate a getter so the value is re-read on every /v1/state
