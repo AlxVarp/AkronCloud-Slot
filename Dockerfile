@@ -230,42 +230,137 @@ RUN mkdir -p /etc/s6-overlay/s6-rc.d/svc-mt5-bridge-adapter && \
 
 # SlotService.ex5 ships pre-compiled in the repo (mql5/SlotService.ex5).
 # Service mode (commits a606493 + 0499462): #property service,
-# registered in services.ini below. MT5 launches it at terminal
-# startup, before any chart is loaded — no chart-template
-# dependency, no manual attach.
+# registered in services.ini + Wine registry below. MT5 launches
+# it at terminal startup, before any chart is loaded — no chart-
+# template dependency, no manual attach.
+#
+# v52: paths moved from `users/abc/MetaTrader 5/` to
+# `Program Files/MetaTrader 5/`. The autostart (above) launches
+# the Program Files terminal64.exe, so the service binary and its
+# config MUST live in the same install. The user-space MT5 dir
+# is an akron-mt5-base artifact (carried over from /Metatrader/start.sh
+# pre-ad1965e) that the slot never uses.
 #
 # Phase C / Ruta B1: the service talks to the slot over a TCP socket
-# on 127.0.0.1:7778 (newline-delimited JSON), NOT via MQL5/Files/.
-# This requires `AllowDllImport=1` in terminal.ini (set below) so
-# MQL5 can load ws2_32.dll via #import. See
-# docs/plans/PHASE_C_RTA_B1_TCP_SOCKET.md for the wire protocol.
+# on 127.0.0.1:7778 (newline-delimited JSON). This requires
+# `AllowDllImport=1` in terminal.ini (set below) so MQL5 can load
+# ws2_32.dll via #import. See docs/plans/PHASE_C_RTA_B1_TCP_SOCKET.md
+# for the wire protocol.
 #
 # Compiled inside ghcr.io/alxvarp/akron-mt5-base:mt5-preinstalled
 # with MetaEditor64.exe via Wine (see mql5/SlotService.mq5 for the
 # source).
-COPY ["mql5/SlotService.ex5", "/config/.wine/drive_c/users/abc/MetaTrader 5/MQL5/Services/SlotService.ex5"]
+COPY ["mql5/SlotService.ex5", "/config/.wine/drive_c/Program Files/MetaTrader 5/MQL5/Services/SlotService.ex5"]
 RUN chown abc:abc \
-   /config/.wine/drive_c/users/abc/MetaTrader\ 5/MQL5/Services/SlotService.ex5
+   "/config/.wine/drive_c/Program Files/MetaTrader 5/MQL5/Services/SlotService.ex5"
 
 # Phase C / Ruta B1: allow DLL imports so SlotService can use
 # ws2_32 (TCP sockets). Without this, MQL5 silently refuses to
 # load ws2_32.dll and the service won't be able to connect to
 # the slot's TCP server.
-RUN mkdir -p "/config/.wine/drive_c/users/abc/MetaTrader 5/Config" \
- && if ! grep -q '^\[Experts\]' "/config/.wine/drive_c/users/abc/MetaTrader 5/Config/terminal.ini" 2>/dev/null; then \
-      printf '\n[Experts]\nAllowDllImport=1\n' \
-        >> "/config/.wine/drive_c/users/abc/MetaTrader 5/Config/terminal.ini"; \
-    fi \
- && chown abc:abc "/config/.wine/drive_c/users/abc/MetaTrader 5/Config/terminal.ini"
+#
+# v52: also enable `AllowServices` (the MQL5 service-mode toggle
+# in Tools → Options → Expert Advisors) and `AllowAlgoTrading` so
+# the service auto-launches on first MT5 boot. Without these
+# toggles MT5 silently ignores services.ini and the registry
+# Services\ subkey, and the slot gets `loggedIn: false` forever
+# (see docs/sessions/2026-07-22-slot-service-autoenable.md §2).
+# Idempotent: re-applying the image over an existing WINEPREFIX
+# just upserts the keys.
+RUN MT5_TI="/config/.wine/drive_c/Program Files/MetaTrader 5/Config/terminal.ini" \
+ && mkdir -p "$(dirname "$MT5_TI")" \
+ && touch "$MT5_TI" \
+ && export MT5_TI \
+ && python3 <<'PY'
+import os, re
+p = os.environ['MT5_TI']
+with open(p) as f: txt = f.read()
+# Find or append the [Experts] block; ensure the three toggles.
+m = re.search(r'(\[Experts\][^\n]*\n)([^\[]*?)(?=\n\[|\Z)', txt, re.S)
+def ensure(lines, key, val):
+    if not re.search(rf'^{re.escape(key)}=', lines, re.M):
+        return lines.rstrip('\n') + f'\n{key}={val}\n'
+    return lines
+if m:
+    head, body = m.group(1), m.group(2)
+    body = ensure(body, 'AllowDllImport',  '1')
+    body = ensure(body, 'AllowServices',   '1')
+    body = ensure(body, 'AllowAlgoTrading', '1')
+    txt = txt[:m.start()] + head + body + txt[m.end():]
+else:
+    txt = txt.rstrip('\n') + '\n\n[Experts]\nAllowDllImport=1\nAllowServices=1\nAllowAlgoTrading=1\n'
+with open(p, 'w') as f: f.write(txt)
+PY
+RUN chown abc:abc "/config/.wine/drive_c/Program Files/MetaTrader 5/Config/terminal.ini"
 
-# Register the service in the user's default profile so MT5
+# Register the service in the Program Files default profile so MT5
 # auto-runs it on every terminal boot. The service connects to
 # the slot's TCP socket on 127.0.0.1:7778 and exchanges JSON
 # frames (newlines) for commands and events.
-RUN mkdir -p "/config/.wine/drive_c/users/abc/MetaTrader 5/profiles/default" \
- && printf '%s\n' '[Services]' 'SlotService=SlotService.ex5' \
-    > "/config/.wine/drive_c/users/abc/MetaTrader 5/profiles/default/services.ini" \
- && chown -R abc:abc /config/.wine
+#
+# v52: same path fix as above — moved from
+# `users/abc/MetaTrader 5/profiles/default/` to
+# `Program Files/MetaTrader 5/Profiles/Default/`. MT5 case-sensitive
+# matches the path: `Profiles` (uppercase P) and `Default` (uppercase
+# D) on a case-sensitive filesystem.
+RUN mkdir -p "/config/.wine/drive_c/Program Files/MetaTrader 5/Profiles/Default" \
+ && printf '[Services]\nSlotService=SlotService.ex5\n' \
+    > "/config/.wine/drive_c/Program Files/MetaTrader 5/Profiles/Default/services.ini"
+
+# v52: also stamp the service into the Wine registry under
+# HKCU\Software\MetaQuotes Software\MetaTrader 5\Services\SlotService.
+# MT5's "Services" tab in the Navigator reads from this key. Without
+# the registry stamp, the .ex5 in MQL5/Services/ is on disk but
+# MT5's service loader skips it on the first launch. The keys are
+# the same set the GUI sets when you right-click → Add Service in
+# the Navigator and toggle AutoStart.
+RUN python3 - <<'PY'
+import re
+p = "/config/.wine/user.reg"
+try:
+    with open(p) as f: txt = f.read()
+except FileNotFoundError:
+    open(p, 'w').close(); txt = ""
+
+# 1. AllowServices / AllowAlgoTrading under
+#    Software\MetaQuotes Software\MetaTrader 5\Settings
+SETTINGS = r'[Software\\MetaQuotes Software\\MetaTrader 5\\Settings]'
+m = re.search(rf'({re.escape(SETTINGS)}[^\n]*\n#time=[a-f0-9]+\n)([^\[]*?)(?=\n\[|\Z)', txt, re.S)
+def ensure_block(body, pairs):
+    for k, v in pairs:
+        if not re.search(rf'^{re.escape(k)}=', body, re.M):
+            body = body.rstrip('\n') + f'\n"{k}"=dword:{v}\n'
+    return body
+if m:
+    head, body = m.group(1), m.group(2)
+    body = ensure_block(body, [('AllowAlgoTrading', '00000001'),
+                                ('AllowServices',   '00000001')])
+    txt = txt[:m.start()] + head + body + txt[m.end():]
+else:
+    txt += (
+        f'\n{SETTINGS} 1784529275\n#time=1dd1811d496d02a\n'
+        f'"AllowAlgoTrading"=dword:00000001\n'
+        f'"AllowServices"=dword:00000001\n'
+    )
+
+# 2. Services\SlotService subkey with the same fields the GUI
+#    writes when you add a service and toggle "Start with terminal".
+SVC = r'[Software\\MetaQuotes Software\\MetaTrader 5\\Services\\SlotService]'
+if SVC not in txt:
+    txt += (
+        f'\n{SVC} 1784529275\n'
+        f'#time=1dd1811d496d02a\n'
+        f'"Allow"=dword:00000001\n'
+        f'"AutoStart"=dword:00000001\n'
+        f'"Enabled"=dword:00000001\n'
+        f'"Name"="SlotService"\n'
+        f'"Path"="C:\\\\Program Files\\\\MetaTrader 5\\\\MQL5\\\\Services\\\\SlotService.ex5"\n'
+    )
+
+with open(p, 'w') as f: f.write(txt)
+PY
+
+RUN chown -R abc:abc /config/.wine
 
 EXPOSE 7777
 HEALTHCHECK --interval=30s --timeout=3s --start-period=30s --retries=3 \
