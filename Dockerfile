@@ -280,17 +280,17 @@ RUN mkdir -p /etc/s6-overlay/s6-rc.d/svc-mt5-state-bridge && \
 # Login/Server and published to the slot's Mt5TcpServer on the same
 # wire protocol the v55 publisher uses.
 COPY --chown=root:root src/services/mt5-ocr-bridge.py /opt/akron-mt5-ocr-bridge.py
-RUN mkdir -p /etc/s6-overlay/s6-rc.d/svc-mt5-ocr-bridge && \
-    cat > /etc/s6-overlay/s6-rc.d/svc-mt5-ocr-bridge/run <<'EOSVCOCR' && \
+RUN mkdir -p /etc/s6-overlay/s6-rc.d/svc-mt5-ocr-bridge
+RUN cat > /etc/s6-overlay/s6-rc.d/svc-mt5-ocr-bridge/run <<'EOSVCOCR'
 #!/usr/bin/with-contenv bash
 export DISPLAY=:0
 export HOME=/config
 export WINEDEBUG=-all
 exec /usr/bin/python3 /opt/akron-mt5-ocr-bridge.py
 EOSVCOCR
-    chmod +x /etc/s6-overlay/s6-rc.d/svc-mt5-ocr-bridge/run && \
-    printf 'longrun\n' > /etc/s6-overlay/s6-rc.d/svc-mt5-ocr-bridge/type && \
-    touch /etc/s6-overlay/s6-rc.d/user/contents.d/svc-mt5-ocr-bridge
+RUN chmod +x /etc/s6-overlay/s6-rc.d/svc-mt5-ocr-bridge/run
+RUN printf 'longrun\n' > /etc/s6-overlay/s6-rc.d/svc-mt5-ocr-bridge/type
+RUN touch /etc/s6-overlay/s6-rc.d/user/contents.d/svc-mt5-ocr-bridge
 
 # SlotService.ex5 ships pre-compiled in the repo (mql5/SlotService.ex5).
 # Service mode (commits a606493 + 0499462): #property service,
