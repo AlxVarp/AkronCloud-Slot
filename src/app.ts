@@ -53,12 +53,27 @@ export async function buildApp(cfg: AppConfig): Promise<FastifyInstance> {
   const { startMt5TcpServer } = await import('./services/mt5-tcp-server.js');
   const mt5Tcp = await startMt5TcpServer({
     ledger,
-    resolveAccount: (brokerLogin) =>
-      db
+    resolveAccount: (brokerLogin) => {
+      // Phase A: single-account slot. Events that arrive without a
+      // brokerLogin (the v54 Python account-publisher, any future
+      // event source that doesn't tag itself) fall back to the first
+      // active account in the DB. This is the only sensible default
+      // for a single-tenant container — the alternative is dropping
+      // every untagged event on the floor with `MT5 TCP: no account
+      // resolved`, which is what v54 actually shipped.
+      if (brokerLogin) {
+        return db
+          .prepare(
+            `SELECT * FROM accounts WHERE broker_login = ? AND status != 'disabled' LIMIT 1`,
+          )
+          .get(brokerLogin) as AccountRow | undefined;
+      }
+      return db
         .prepare(
-          `SELECT * FROM accounts WHERE broker_login = ? AND status != 'disabled' LIMIT 1`,
+          `SELECT * FROM accounts WHERE status != 'disabled' ORDER BY created_at ASC LIMIT 1`,
         )
-        .get(brokerLogin) as AccountRow | undefined,
+        .get() as AccountRow | undefined;
+    },
   });
 
   const connector = makeConnector(cfg.connectorId, { db, ledger, tcp: mt5Tcp });
