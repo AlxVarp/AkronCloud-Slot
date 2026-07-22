@@ -13,21 +13,40 @@
  *
  * When we decide the user is logged in:
  *   1. Write /var/lib/akron-slot/state = "operational"
- *   2. Run `s6-svc -d /run/service/svc-de` which cascades to
- *      svc-kclient + svc-kasmvnc + svc-nginx (their deps)
- *   3. Tell the slot's REST/WS layer via `onTransition` so /v1/state
+ *   2. Tell the slot's REST/WS layer via `onTransition` so /v1/state
  *      starts reporting operational.
- *   4. v53: publish an {kind:'account', data:{logged_in:true}} event
+ *   3. v53: publish an {kind:'account', data:{logged_in:true}} event
  *      into the slot's Mt5TcpServer so the Mt5Connector flips
  *      loggedIn=true (the SlotService.ex5 would normally do this
  *      over TCP, but it doesn't autostart on a fresh WINEPREFIX).
+ *   4. v54: publish account balance/equity/login/server when the
+ *      Python account-publisher (running in wine) starts pushing them
+ *      over TCP 7778. The Python side uses `MetaTrader5.initialize()`
+ *      + `mt5.account_info()`, so the slot learns about MT5 state
+ *      without SlotService.ex5 needing to autostart.
  *
  * v53 also adds logout detection: if the user logs out (closes the
  * session), wmctrl reverts to the login dialog and we publish
  * {logged_in:false}. Without this, the slot would stay stuck at
  * loggedIn=true after a logout.
+ *
+ * v54 REMOVES the post-login cascade-kill of the VNC chain. The
+ * original code did `pkill Xvnc; pkill openbox; ...; s6-svc -D
+ * svc-de svc-kclient svc-kasmvnc svc-nginx` after detecting login.
+ * Rationale at the time was "save resources once operational" —
+ * but in practice MT5 (terminal64.exe) dies shortly after Xvnc goes
+ * down because it loses its X display. With MT5 dead, the
+ * MetaTrader5 Python package's `account_info()` always returns
+ * None, so the Python account-publisher (v54) has nothing to
+ * publish and `/v1/state` reports `balance: 0, equity: 0` even
+ * after the user is logged in. The cascade-kill was reverted to
+ * allow MT5 to outlive the VNC session and keep its display. The
+ * resource cost of keeping Xvnc alive post-login is acceptable
+ * (KasmVNC is ~50 MB RSS idle); if this becomes a problem on small
+ * VPSes we can revisit (e.g. switch MT5 to xvfb-run headless once
+ * `mt5.initialize()` is proven to work without a real display).
  */
-import { execFile, execFileSync, spawn } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { writeFileSync, existsSync, readFileSync } from 'node:fs';
 import { promisify } from 'node:util';
 import { log } from '../log.js';
@@ -165,41 +184,12 @@ export function startLoginDetector(opts: StartLoginDetectorOpts): () => void {
         return;
       }
       log.info('MT5 login detected — transitioning slot to operational');
-      try {
-        for (const pat of [
-          'Xvnc',
-          'openbox',
-          'kclient',
-          'nginx: master',
-          'pulseaudio',
-        ]) {
-          try {
-            execFileSync('pkill', ['-9', '-f', pat], { stdio: 'ignore' });
-          } catch {
-            /* pkill exits 1 if no process matched — that's fine */
-          }
-        }
-        for (const svc of [
-          'svc-de',
-          'svc-kclient',
-          'svc-kasmvnc',
-          'svc-nginx',
-        ]) {
-          try {
-            execFileSync('s6-svc', ['-D', `/run/service/${svc}`], {
-              stdio: 'ignore',
-            });
-          } catch {
-            /* ignore — s6 may not be visible to slot's child env */
-          }
-        }
-        log.info('VNC chain killed — slot is now operational');
-      } catch (e) {
-        log.warn(
-          { err: (e as Error).message },
-          'cascade-kill VNC services failed (slot will still mark operational)',
-        );
-      }
+      // v54: cascade-kill of the VNC chain removed. See the file header
+      // for why — killing Xvnc/openbox took MT5's X display with it,
+      // so `mt5.account_info()` from the Python account-publisher
+      // always returned None (MT5 was dead). The slot now leaves
+      // svc-de/svc-kclient/svc-kasmvnc/svc-nginx running so MT5 keeps
+      // its display and the Python side can read account_info().
       try {
         await opts.onTransition();
       } catch (e) {
