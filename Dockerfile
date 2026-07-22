@@ -228,6 +228,33 @@ RUN mkdir -p /etc/s6-overlay/s6-rc.d/svc-mt5-bridge-adapter && \
     printf 'longrun\n' > /etc/s6-overlay/s6-rc.d/svc-mt5-bridge-adapter/type && \
     touch /etc/s6-overlay/s6-rc.d/user/contents.d/svc-mt5-bridge-adapter
 
+# v55 — AccountReporter chart indicator + mt5-state-bridge Python service.
+# Unlike SlotService.ex5 (which is a #property service that doesn't
+# autostart on fresh WINEPREFIX), AccountReporter is a chart indicator
+# that autostarts the moment any chart is loaded in MT5. It writes
+# account state (balance/equity/login/server) to MQL5/Files/slot-state.json
+# every PollSeconds. The mt5-state-bridge watches that file and forwards
+# to the slot's Mt5TcpServer (TCP 127.0.0.1:7778) on the same wire
+# protocol SlotService.ex5 would have used.
+#
+# The compiled .ex5 must be checked into the repo at
+# mql5/AccountReporter.ex5 — the source is in mql5/AccountReporter.mq5
+# and was compiled outside this sandbox (metaeditor64.exe CLI is broken
+# in wine 11.0 here). Until the .ex5 is committed, this COPY will
+# fail the docker build — that's intentional, it surfaces the missing
+# artifact instead of silently shipping an indicator-less image.
+COPY ["mql5/AccountReporter.ex5", "/config/.wine/drive_c/Program Files/MetaTrader 5/MQL5/Indicators/AccountReporter.ex5"]
+RUN chown abc:abc \
+   "/config/.wine/drive_c/Program Files/MetaTrader 5/MQL5/Indicators/AccountReporter.ex5"
+
+COPY --chown=root:root src/services/mt5-state-bridge.py /opt/akron-mt5-state-bridge.py
+RUN mkdir -p /etc/s6-overlay/s6-rc.d/svc-mt5-state-bridge && \
+    printf '#!/usr/bin/with-contenv bash\nexec /usr/bin/python3 /opt/akron-mt5-state-bridge.py\n' \
+      > /etc/s6-overlay/s6-rc.d/svc-mt5-state-bridge/run && \
+    chmod +x /etc/s6-overlay/s6-rc.d/svc-mt5-state-bridge/run && \
+    printf 'longrun\n' > /etc/s6-overlay/s6-rc.d/svc-mt5-state-bridge/type && \
+    touch /etc/s6-overlay/s6-rc.d/user/contents.d/svc-mt5-state-bridge
+
 # SlotService.ex5 ships pre-compiled in the repo (mql5/SlotService.ex5).
 # Service mode (commits a606493 + 0499462): #property service,
 # registered in services.ini + Wine registry below. MT5 launches
