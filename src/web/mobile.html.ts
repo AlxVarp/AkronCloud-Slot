@@ -87,7 +87,11 @@ export const MOBILE_HTML = `<!DOCTYPE html>
        + margin:auto on the canvas beat author CSS !important rules. */
     #screen {
       flex: 1; min-height: 0;
-      background: #000;
+      /* Background is the same near-black as the page so the
+         "empty" area around the MT5 dialogs (the parts of the
+         414x500 desktop that don't have any widget) blends in
+         with the page instead of looking like a broken render. */
+      background: #0b0e14;
       position: relative;
       overflow: hidden;
       touch-action: none;
@@ -437,17 +441,19 @@ function connect() {
   //     fixed 414x896 canvas down to fit the phone viewport, with
   //     letterbox centering via the flex container.
   rfb.resizeSession = false;
-  // We pick 414x500 (portrait iPhone width, shorter height) instead
-  // of the Xvnc cmdline 1024x768 or a full 414x896. The shorter
+  // We pick 414x440 (portrait iPhone width, short height) instead
+  // of the Xvnc cmdline 1024x768 or a full 414x896. The short
   // height means the chart window in the visible canvas is bigger
   // relative to the phone viewport - autoscale fits the desktop
   // to the phone width (no horizontal letterbox) while keeping the
   // chart at a comfortable aspect. The previous 414x896 was
   // correct in count of pixels but made the visible chart look
   // small on the phone because the empty MT5 desktop below
-  // the chart window ate half the canvas.
+  // the chart window ate half the canvas. 414x440 makes the
+  // desktop's aspect (0.94) close to the typical phone's aspect
+  // so there's no big "empty" area on top or bottom.
   rfb.forcedResolutionX = 414;
-  rfb.forcedResolutionY = 500;
+  rfb.forcedResolutionY = 440;
   rfb.scaleViewport = true;
   rfb.clipViewport = true;
   rfb.qualityLevel = 6;
