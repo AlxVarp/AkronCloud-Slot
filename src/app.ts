@@ -131,6 +131,11 @@ export async function buildApp(cfg: AppConfig): Promise<FastifyInstance> {
     onTransition: async () => {
       log.info({ evt: 'login_detected' }, 'slot transitioned to operational');
     },
+    // v53: feed {kind:'account', data:{logged_in}} events into the
+    // same TCP server the SlotService.ex5 would have used. The
+    // detector is the "fast path" until/unless MQL5 services get
+    // autostart-able again (see v52 handoff).
+    tcp: mt5Tcp,
   });
 
   // Expose the slot lifecycle state for the /v1/state endpoint.

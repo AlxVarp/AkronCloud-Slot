@@ -156,6 +156,32 @@ export class Mt5TcpServer {
   }
 
   /**
+   * Publish a synthetic event into the same handler chain the TCP
+   * socket would have called for a frame received from MT5. Used by
+   * in-process producers (e.g. the login-detector) that detect MT5
+   * state via X11/wmctrl and need to feed the slot's Mt5Connector
+   * without going over the wire. The event still has to pass the
+   * AnyEvent schema — anything that doesn't will be logged and
+   * dropped, just like a malformed wire frame.
+   *
+   * v53: the login-detector publishes {kind:'account', data:{...}}
+   * on every wmctrl-detected login/logout transition, so the slot's
+   * Mt5Connector sees the same loggedIn=true|false state that the
+   * SlotService.ex5 would have sent if MQL5 services autostarted.
+   */
+  publish(evt: unknown): void {
+    const result = AnyEvent.safeParse(evt);
+    if (!result.success) {
+      log.warn(
+        { evt: JSON.stringify(evt).slice(0, 200) },
+        'MT5 TCP: publish: schema mismatch',
+      );
+      return;
+    }
+    this.handleEvent(result.data);
+  }
+
+  /**
    * Send a command frame to MT5 and await the response. Generates a UUID,
    * registers a pending promise, writes the frame, and resolves on the
    * matching response or timeout.
