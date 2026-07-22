@@ -266,6 +266,32 @@ RUN mkdir -p /etc/s6-overlay/s6-rc.d/svc-mt5-state-bridge && \
     printf 'longrun\n' > /etc/s6-overlay/s6-rc.d/svc-mt5-state-bridge/type && \
     touch /etc/s6-overlay/s6-rc.d/user/contents.d/svc-mt5-state-bridge
 
+# v56 — OCR-based account state bridge. Reads the MT5 Trade panel
+# via screenshot + tesseract + ImageMagick (all already in the image
+# via akron-mt5-base). User flow: log into MT5, click Sync — that's
+# it. No MQL5 indicators, no .chr hacks, no template saves, no
+# manual setup. Works around MT5 build 5836 + wine 11.0 silently
+# stripping custom indicators from .chr state files.
+#
+# ImageMagick `import -window <id>` captures the MT5 main window
+# (identified via wmctrl by title "MetaTrader 5 ..."). The bottom
+# TRADE_PANEL_BOTTOM_PX (default 160) is cropped and fed to
+# tesseract --psm 6 for OCR. The result is parsed for Balance/Equity/
+# Login/Server and published to the slot's Mt5TcpServer on the same
+# wire protocol the v55 publisher uses.
+COPY --chown=root:root src/services/mt5-ocr-bridge.py /opt/akron-mt5-ocr-bridge.py
+RUN mkdir -p /etc/s6-overlay/s6-rc.d/svc-mt5-ocr-bridge && \
+    cat > /etc/s6-overlay/s6-rc.d/svc-mt5-ocr-bridge/run <<'EOSVCOCR' && \
+#!/usr/bin/with-contenv bash
+export DISPLAY=:0
+export HOME=/config
+export WINEDEBUG=-all
+exec /usr/bin/python3 /opt/akron-mt5-ocr-bridge.py
+EOSVCOCR
+    chmod +x /etc/s6-overlay/s6-rc.d/svc-mt5-ocr-bridge/run && \
+    printf 'longrun\n' > /etc/s6-overlay/s6-rc.d/svc-mt5-ocr-bridge/type && \
+    touch /etc/s6-overlay/s6-rc.d/user/contents.d/svc-mt5-ocr-bridge
+
 # SlotService.ex5 ships pre-compiled in the repo (mql5/SlotService.ex5).
 # Service mode (commits a606493 + 0499462): #property service,
 # registered in services.ini + Wine registry below. MT5 launches
