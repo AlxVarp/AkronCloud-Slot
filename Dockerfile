@@ -228,6 +228,70 @@ RUN mkdir -p /etc/s6-overlay/s6-rc.d/svc-mt5-bridge-adapter && \
     printf 'longrun\n' > /etc/s6-overlay/s6-rc.d/svc-mt5-bridge-adapter/type && \
     touch /etc/s6-overlay/s6-rc.d/user/contents.d/svc-mt5-bridge-adapter
 
+# v55 — AccountReporter chart indicator + mt5-state-bridge Python service.
+# Unlike SlotService.ex5 (which is a #property service that doesn't
+# autostart on fresh WINEPREFIX), AccountReporter is a chart indicator
+# that autostarts the moment any chart is loaded in MT5. It writes
+# account state (balance/equity/login/server) to MQL5/Files/slot-state.json
+# every PollSeconds. The mt5-state-bridge watches that file and forwards
+# to the slot's Mt5TcpServer (TCP 127.0.0.1:7778) on the same wire
+# protocol SlotService.ex5 would have used.
+#
+# The compiled .ex5 must be checked into the repo at
+# mql5/AccountReporter.ex5 — the source is in mql5/AccountReporter.mq5
+# and was compiled outside this sandbox (metaeditor64.exe CLI is broken
+# in wine 11.0 here). Until the .ex5 is committed, this COPY will
+# fail the docker build — that's intentional, it surfaces the missing
+# artifact instead of silently shipping an indicator-less image.
+COPY ["mql5/AccountReporter.ex5", "/config/.wine/drive_c/Program Files/MetaTrader 5/MQL5/Indicators/AccountReporter.ex5"]
+RUN chown abc:abc \
+   "/config/.wine/drive_c/Program Files/MetaTrader 5/MQL5/Indicators/AccountReporter.ex5"
+
+# v55 auto-attach: edit every Profiles/Charts/<Profile>/chart*.chr to
+# include AccountReporter in its <indicator> list. MT5 restores the
+# .chr state on every boot, so the indicator comes back automatically
+# — no manual Navigator-drag, no template wiring, zero user steps.
+# Idempotent: the script checks for an existing AccountReporter entry
+# before adding. Charts that lack an AccountReporter line get one
+# injected right before </window>.
+COPY scripts/inject-account-reporter.py /usr/local/bin/inject-account-reporter.py
+RUN chmod +x /usr/local/bin/inject-account-reporter.py && \
+    /usr/local/bin/inject-account-reporter.py 2>&1 | sed 's/^/  [inject] /'
+
+COPY --chown=root:root src/services/mt5-state-bridge.py /opt/akron-mt5-state-bridge.py
+RUN mkdir -p /etc/s6-overlay/s6-rc.d/svc-mt5-state-bridge && \
+    printf '#!/usr/bin/with-contenv bash\nexec /usr/bin/python3 /opt/akron-mt5-state-bridge.py\n' \
+      > /etc/s6-overlay/s6-rc.d/svc-mt5-state-bridge/run && \
+    chmod +x /etc/s6-overlay/s6-rc.d/svc-mt5-state-bridge/run && \
+    printf 'longrun\n' > /etc/s6-overlay/s6-rc.d/svc-mt5-state-bridge/type && \
+    touch /etc/s6-overlay/s6-rc.d/user/contents.d/svc-mt5-state-bridge
+
+# v56 — OCR-based account state bridge. Reads the MT5 Trade panel
+# via screenshot + tesseract + ImageMagick (all already in the image
+# via akron-mt5-base). User flow: log into MT5, click Sync — that's
+# it. No MQL5 indicators, no .chr hacks, no template saves, no
+# manual setup. Works around MT5 build 5836 + wine 11.0 silently
+# stripping custom indicators from .chr state files.
+#
+# ImageMagick `import -window <id>` captures the MT5 main window
+# (identified via wmctrl by title "MetaTrader 5 ..."). The bottom
+# TRADE_PANEL_BOTTOM_PX (default 160) is cropped and fed to
+# tesseract --psm 6 for OCR. The result is parsed for Balance/Equity/
+# Login/Server and published to the slot's Mt5TcpServer on the same
+# wire protocol the v55 publisher uses.
+COPY --chown=root:root src/services/mt5-ocr-bridge.py /opt/akron-mt5-ocr-bridge.py
+RUN mkdir -p /etc/s6-overlay/s6-rc.d/svc-mt5-ocr-bridge
+RUN cat > /etc/s6-overlay/s6-rc.d/svc-mt5-ocr-bridge/run <<'EOSVCOCR'
+#!/usr/bin/with-contenv bash
+export DISPLAY=:0
+export HOME=/config
+export WINEDEBUG=-all
+exec /usr/bin/python3 /opt/akron-mt5-ocr-bridge.py
+EOSVCOCR
+RUN chmod +x /etc/s6-overlay/s6-rc.d/svc-mt5-ocr-bridge/run
+RUN printf 'longrun\n' > /etc/s6-overlay/s6-rc.d/svc-mt5-ocr-bridge/type
+RUN touch /etc/s6-overlay/s6-rc.d/user/contents.d/svc-mt5-ocr-bridge
+
 # SlotService.ex5 ships pre-compiled in the repo (mql5/SlotService.ex5).
 # Service mode (commits a606493 + 0499462): #property service,
 # registered in services.ini + Wine registry below. MT5 launches

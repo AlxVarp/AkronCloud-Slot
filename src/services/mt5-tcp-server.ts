@@ -289,10 +289,17 @@ export class Mt5TcpServer {
       log.info({ ts: evt.ts }, 'MT5 service reported startup');
       return;
     }
-    // Account resolution: the slot's #property service runs in a
-    // single-account context, so we resolve by the slot's primary
-    // account. Future: support multiple accounts via SLOTS_PER_TENANT.
-    const account = this.resolveAccount('');
+    // Account resolution: prefer the broker_login from the event
+    // payload when the publisher includes it (the v55 AccountReporter
+    // chart indicator does). For events without a login field (the
+    // v54 Python publisher, SlotService.ex5 in the original Phase C
+    // design) the resolveAccount impl in app.ts falls back to the
+    // first active account. This keeps v54 working unchanged while
+    // letting v55 be explicit about which account it's reporting on.
+    const payloadLogin = (evt.data as { login?: string | number } | undefined)?.login;
+    const account = this.resolveAccount(
+      payloadLogin !== undefined ? String(payloadLogin) : '',
+    );
     if (!account) {
       log.warn({ kind: evt.kind }, 'MT5 TCP: no account resolved');
       return;
