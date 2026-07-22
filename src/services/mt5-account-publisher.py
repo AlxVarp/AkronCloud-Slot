@@ -79,8 +79,18 @@ POLL_SECS = float(os.environ.get("MT5_ACCOUNT_POLL_SECS", "1.5"))
 INIT_RETRY_SECS = float(os.environ.get("MT5_INIT_RETRY_SECS", "5.0"))
 INIT_TIMEOUT_SECS = float(os.environ.get("MT5_INIT_TIMEOUT_SECS", "60.0"))
 
+# After this many consecutive `mt5.account_info() → None` polls, the
+# publisher assumes the IPC connection silently died (MT5 broker
+# re-auth, wine hiccup, slot broker-login flow interference) and
+# forces re-initialization. At POLL_SECS=1.5s, default=10 means we
+# wait ~15s of bad readings before re-init — long enough to
+# distinguish a real logout from a transient IPC blip, short enough
+# to recover automatically within the user's normal attention span.
+MAX_NONE_STREAK = int(os.environ.get("MT5_MAX_NONE_STREAK", "10"))
+
 _stop = False
 _mt5_ready = False
+_none_streak = 0
 
 
 def _on_signal(signum, _frame):
@@ -183,7 +193,7 @@ def loop() -> int:
     # local variable throughout that function. Without the `global`
     # declaration the first read of `_mt5_ready` (before any
     # assignment) raises UnboundLocalError, killing the service.
-    global _mt5_ready
+    global _mt5_ready, _none_streak
 
     log.info(
         "publisher starting (slot=%s:%d, poll=%.1fs, init_timeout=%.0fs, mt5_available=%s)",
@@ -256,14 +266,39 @@ def loop() -> int:
                 continue
 
             if info is None:
-                # User logged out (or never logged in). Publish
-                # logged_in=false if we previously said true.
+                # account_info() returned None. Two cases:
+                #   1. User genuinely logged out — publish logged_in=false.
+                #   2. The IPC connection silently died (MT5 broker
+                #      re-auth, slot's broker-login flow, wine hiccup).
+                #      In case 2, the next call also returns None — so
+                #      we must re-initialize, otherwise we publish
+                #      logged_in=false forever even after MT5 is back.
+                #
+                # Disambiguate: if account_info() returned None more
+                # than once in a row, assume IPC is dead and re-init.
+                # If this is the first None and it persists for
+                # MAX_NONE_STREAK consecutive polls, re-init too.
+                _none_streak += 1
                 if last_sent is None or last_sent.get("logged_in") is not False:
                     payload = frame("account", {"logged_in": False})
                     if client.send(payload):
                         last_sent = {"logged_in": False}
                         log.info("MT5 account_info() is None — published logged_in=false")
+                if _none_streak >= MAX_NONE_STREAK:
+                    log.warning(
+                        "account_info() returned None %d times in a row — re-initializing IPC",
+                        _none_streak,
+                    )
+                    _mt5_ready = False
+                    init_started_at = time.monotonic()
+                    try:
+                        mt5.shutdown()
+                    except Exception:
+                        pass
+                    _none_streak = 0
+                    continue
             else:
+                _none_streak = 0
                 data = normalize_account(info)
                 if data != last_sent:
                     payload = frame("account", data)
