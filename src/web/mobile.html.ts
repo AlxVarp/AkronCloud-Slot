@@ -573,9 +573,18 @@ function sendChar(ch) {
   // in XtScancode and sends a QEMU Extended Key Event. Without
   // it, RFB falls back to a plain KeyEvent (keysym only) which
   // some KasmVNC versions process incorrectly.
-  var base = ch.toLowerCase();
-  var keysym = XK[base] || XK[ch] || ch.charCodeAt(0);
+  //
+  // keysym: the SCANCODE corresponds to the physical key position
+  // (KeyD = scancode 0x20 for the D key on a US keyboard). The
+  // keysym must agree with that position - sending XK_a (0x61)
+  // with a D scancode is a mismatch the X server may resolve
+  // incorrectly (treating the event as a lowercase a even with
+  // Shift held). The X server is the one that applies Shift to
+  // the scancode's key. So we always pass the LOWERCASE keysym
+  // (matching the scancode position) and let Shift convert it
+  // to uppercase server-side.
   var code = charToCode(ch);
+  var keysym = XK[ch.toLowerCase()] || ch.toLowerCase().charCodeAt(0);
   sendKey(keysym, code);
 }
 
