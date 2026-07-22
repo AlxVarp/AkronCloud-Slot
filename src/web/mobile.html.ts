@@ -567,24 +567,23 @@ function sendKey(keysym, code) {
   sendKeyUp(keysym, code);
 }
 function sendChar(ch) {
-  // Always go through the scancode path so the X server XKB layer
-  // resolves the key correctly. RFB code arg is the HTML
-  // KeyboardEvent.code string; with it, RFB looks up the scancode
-  // in XtScancode and sends a QEMU Extended Key Event. Without
-  // it, RFB falls back to a plain KeyEvent (keysym only) which
-  // some KasmVNC versions process incorrectly.
-  //
-  // keysym: the SCANCODE corresponds to the physical key position
-  // (KeyD = scancode 0x20 for the D key on a US keyboard). The
-  // keysym must agree with that position - sending XK_a (0x61)
-  // with a D scancode is a mismatch the X server may resolve
-  // incorrectly (treating the event as a lowercase a even with
-  // Shift held). The X server is the one that applies Shift to
-  // the scancode's key. So we always pass the LOWERCASE keysym
-  // (matching the scancode position) and let Shift convert it
-  // to uppercase server-side.
+  // Send the keysym that already matches the case the user wants.
+  // 'D' typed on the keyboard with Shift active should land in
+  // the input as 'D' - the simplest way is to send the uppercase
+  // keysym (XK_D = 0x44) directly with the matching scancode
+  // (KeyD = 0x20), instead of trying to track the Shift modifier
+  // through RFB -> WS -> KasmVNC -> X server -> XKB -> Wine/MT5.
+  // That pipeline has too many hops for a transient modifier
+  // state to be reliably preserved; an explicit uppercase keysym
+  // has no such race.
   var code = charToCode(ch);
-  var keysym = XK[ch.toLowerCase()] || ch.toLowerCase().charCodeAt(0);
+  // Pick the keysym matching the case of the character the user
+  // typed. The wrapper's pressKey passes the right case already
+  // (it converts to uppercase when Shift is sticky), so this
+  // lookup matches.
+  var upperSym = XK[ch.toUpperCase()] || ch.toUpperCase().charCodeAt(0);
+  var lowerSym = XK[ch.toLowerCase()] || ch.toLowerCase().charCodeAt(0);
+  var keysym = ch === ch.toUpperCase() && ch !== ch.toLowerCase() ? upperSym : lowerSym;
   sendKey(keysym, code);
 }
 
@@ -604,46 +603,31 @@ function charToCode(ch) {
 
 function pressKey(ch) {
   if (ch === 'shift') {
-    // Sticky shift: tap the key once, next letter is uppercase,
-    // then the shift state auto-clears. We pass 'ShiftLeft' as
-    // the KeyboardEvent.code so RFB looks up the scancode (0x2A
-    // per XtScancode) and sends a QEMU Extended Key Event - the
-    // scancode path is what KasmVNC actually translates into a
-    // real Shift modifier; keysym-only often gets silently
-    // swallowed by the X server.
+    // Sticky shift: tap the key once, the next letter is sent
+    // uppercase, then it auto-clears. We DO NOT send the Shift
+    // modifier to MT5 - instead sendChar picks the case-matched
+    // keysym (XK_D for 'D', XK_d for 'd'). Tracking the Shift
+    // modifier through RFB -> WS -> KasmVNC -> X server -> XKB
+    // -> Wine/MT5 lost it in v44, v46, and v48 (all three
+    // attempts; either the scancode path was bypassed, the
+    // keysym/scancode mismatched, or the modifier got coalesced
+    // at the WS layer). Sending the right-case keysym directly
+    // removes that whole race. Visual feedback (uppercase letters
+    // in the wrapper when shift is on) is the only user-visible
+    // effect of the sticky shift now.
     shift = !shift;
-    // Visual feedback: the keyboard container gets a class
-    // that uppercases the letter buttons via CSS. One DOM write
-    // per shift toggle. Numbers and symbols are unaffected by
-    // text-transform:uppercase.
     const kbd = document.getElementById('keyboard');
     if (kbd) kbd.classList.toggle('shift-on', shift);
     document.querySelectorAll('[data-key="shift"]').forEach((b) => {
       b.style.opacity = shift ? '1' : '0.6';
     });
-    sendKey(NAMED.shift_L, 'ShiftLeft');
     return;
   }
-  // When shift is sticky, hold Shift down BEFORE the key and
-  // release AFTER. Send the scancode path for Shift so the
-  // modifier actually takes effect on the X server side.
-  var wasShifted = shift;
-  if (wasShifted) {
-    sendKeyDown(NAMED.shift_L, 'ShiftLeft');
-    // Small wait so the X server processes the Shift down before
-    // the letter press. RFB queues WS messages and the server
-    // processes them in order, but some KasmVNC versions coalesce
-    // or drop modifier events that arrive in the same tick as the
-    // letter. A 5ms gap avoids the race.
-    const t0 = performance.now();
-    while (performance.now() - t0 < 5) {}
-  }
+  // No Shift modifier sent to MT5. sendChar below uses the
+  // case-matched keysym (XK_D vs XK_d) so the X server knows
+  // whether the press is upper or lower without needing a
+  // transient modifier.
 
-  // Use the scancode path uniformly for every key, including
-  // backspace / enter / space / letters / digits / symbols. The
-  // previous version sent those with code=null, which falls back
-  // to a plain KeyEvent - on KasmVNC that's a less reliable path
-  // than QEMU Extended Key Event.
   var code = null;
   if (ch === 'backspace') code = 'Backspace';
   else if (ch === 'enter')    code = 'Enter';
@@ -655,14 +639,16 @@ function pressKey(ch) {
   else if (ch === 'space')    { sendKey(XK[' '], code); }
   else if (ch === '-')        { sendChar('-'); }
   else if (ch === '.')        { sendChar('.'); }
-  else                        { sendChar(wasShifted ? ch.toUpperCase() : ch); }
+  else                        { sendChar(shift ? ch.toUpperCase() : ch); }
 
-  if (wasShifted) {
-    sendKeyUp(NAMED.shift_L, 'ShiftLeft');
+  if (shift) {
+    // Sticky clears after one letter, like a real keyboard.
     shift = false;
     document.querySelectorAll('[data-key="shift"]').forEach((b) => {
       b.style.opacity = '0.6';
     });
+    const kbd = document.getElementById('keyboard');
+    if (kbd) kbd.classList.remove('shift-on');
   }
 }
 
