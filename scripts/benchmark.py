@@ -126,7 +126,15 @@ def tier1_state(report: Report, base: str) -> None:
 def tier1_mobile(report: Report, base: str) -> None:
     r = requests.get(f"{base}/mobile", timeout=5)
     html = r.text if r.status_code == 200 else ""
-    ok = r.status_code == 200 and "MetaTrader" in html
+    # Mobile UI is the KasmVNC wrapper. Title contains
+    # "akroncloud-slot · mobile VNC"; the iframe inside points at
+    # KasmVNC which itself loads MetaTrader. Check for the wrapper
+    # title + that the response is non-trivial HTML.
+    ok = (
+        r.status_code == 200
+        and "akroncloud-slot" in html
+        and len(html) > 5000
+    )
     report.add("mobile UI serves HTML", 1, ok, f"HTTP {r.status_code} bytes={len(html)}")
 
 
