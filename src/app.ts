@@ -54,19 +54,32 @@ export async function buildApp(cfg: AppConfig): Promise<FastifyInstance> {
   const mt5Tcp = await startMt5TcpServer({
     ledger,
     resolveAccount: (brokerLogin) => {
-      // Phase A: single-account slot. Events that arrive without a
-      // brokerLogin (the v54 Python account-publisher, any future
-      // event source that doesn't tag itself) fall back to the first
-      // active account in the DB. This is the only sensible default
-      // for a single-tenant container — the alternative is dropping
-      // every untagged event on the floor with `MT5 TCP: no account
-      // resolved`, which is what v54 actually shipped.
+      // Phase A: single-account slot. Two fallback levels:
+      //
+      // 1. Exact match by broker_login when the event includes one
+      //    (the v55 MQL5 AccountReporter includes it; the v54 Python
+      //    publisher sends events without one, falling through to #2).
+      //
+      // 2. First active account by created_at when no exact match is
+      //    found. This handles two real cases observed in production:
+      //    (a) event arrives without a brokerLogin (Python publisher
+      //        fallback for Finding C failure)
+      //    (b) brokerLogin from MT5 doesn't match the DB row — happens
+      //        when the user re-uses the slot image with a different
+      //        MT5 login than the one provisioned by the cerebro. The
+      //        slot is single-tenant so falling back to the only active
+      //        account is the right behavior.
+      //
+      // The alternative (drop on floor with "no account resolved")
+      // was v54's actual behavior and is what the user is trying to
+      // escape from.
       if (brokerLogin) {
-        return db
+        const exact = db
           .prepare(
             `SELECT * FROM accounts WHERE broker_login = ? AND status != 'disabled' LIMIT 1`,
           )
           .get(brokerLogin) as AccountRow | undefined;
+        if (exact) return exact;
       }
       return db
         .prepare(
