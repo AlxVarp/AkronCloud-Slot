@@ -66,6 +66,23 @@ void OnDeinit(const int reason)
 }
 
 //+------------------------------------------------------------------+
+//| OnCalculate — MQL5 requires this even when indicator_plots == 0   |
+//|--------------------------------------------------------------------
+//| We don't plot anything — AccountReporter just polls account state
+//| via OnTimer. MQL5 still requires the function to exist (compile
+//| error 209 otherwise). We return rates_total to signal "no recalc
+//| needed"; MQL5 will keep calling us on each tick but the function
+//| body is a no-op, so cost is negligible.
+//+------------------------------------------------------------------+
+int OnCalculate(const int rates_total,
+                const int prev_calculated,
+                const int begin,
+                const double &price[])
+{
+   return(rates_total);
+}
+
+//+------------------------------------------------------------------+
 //| Timer — called every PollSeconds                                  |
 //+------------------------------------------------------------------+
 void OnTimer()

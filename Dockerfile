@@ -247,6 +247,17 @@ COPY ["mql5/AccountReporter.ex5", "/config/.wine/drive_c/Program Files/MetaTrade
 RUN chown abc:abc \
    "/config/.wine/drive_c/Program Files/MetaTrader 5/MQL5/Indicators/AccountReporter.ex5"
 
+# v55 auto-attach: edit every Profiles/Charts/<Profile>/chart*.chr to
+# include AccountReporter in its <indicator> list. MT5 restores the
+# .chr state on every boot, so the indicator comes back automatically
+# — no manual Navigator-drag, no template wiring, zero user steps.
+# Idempotent: the script checks for an existing AccountReporter entry
+# before adding. Charts that lack an AccountReporter line get one
+# injected right before </window>.
+COPY scripts/inject-account-reporter.py /usr/local/bin/inject-account-reporter.py
+RUN chmod +x /usr/local/bin/inject-account-reporter.py && \
+    /usr/local/bin/inject-account-reporter.py 2>&1 | sed 's/^/  [inject] /'
+
 COPY --chown=root:root src/services/mt5-state-bridge.py /opt/akron-mt5-state-bridge.py
 RUN mkdir -p /etc/s6-overlay/s6-rc.d/svc-mt5-state-bridge && \
     printf '#!/usr/bin/with-contenv bash\nexec /usr/bin/python3 /opt/akron-mt5-state-bridge.py\n' \
