@@ -13,15 +13,44 @@
  *
  * When we decide the user is logged in:
  *   1. Write /var/lib/akron-slot/state = "operational"
- *   2. Run `s6-svc -d /run/service/svc-de` which cascades to
- *      svc-kclient + svc-kasmvnc + svc-nginx (their deps)
- *   3. Tell the slot's REST/WS layer via `onTransition` so /v1/state
+ *   2. Tell the slot's REST/WS layer via `onTransition` so /v1/state
  *      starts reporting operational.
+ *   3. v53: publish an {kind:'account', data:{logged_in:true}} event
+ *      into the slot's Mt5TcpServer so the Mt5Connector flips
+ *      loggedIn=true (the SlotService.ex5 would normally do this
+ *      over TCP, but it doesn't autostart on a fresh WINEPREFIX).
+ *   4. v54: publish account balance/equity/login/server when the
+ *      Python account-publisher (running in wine) starts pushing them
+ *      over TCP 7778. The Python side uses `MetaTrader5.initialize()`
+ *      + `mt5.account_info()`, so the slot learns about MT5 state
+ *      without SlotService.ex5 needing to autostart.
+ *
+ * v53 also adds logout detection: if the user logs out (closes the
+ * session), wmctrl reverts to the login dialog and we publish
+ * {logged_in:false}. Without this, the slot would stay stuck at
+ * loggedIn=true after a logout.
+ *
+ * v54 REMOVES the post-login cascade-kill of the VNC chain. The
+ * original code did `pkill Xvnc; pkill openbox; ...; s6-svc -D
+ * svc-de svc-kclient svc-kasmvnc svc-nginx` after detecting login.
+ * Rationale at the time was "save resources once operational" —
+ * but in practice MT5 (terminal64.exe) dies shortly after Xvnc goes
+ * down because it loses its X display. With MT5 dead, the
+ * MetaTrader5 Python package's `account_info()` always returns
+ * None, so the Python account-publisher (v54) has nothing to
+ * publish and `/v1/state` reports `balance: 0, equity: 0` even
+ * after the user is logged in. The cascade-kill was reverted to
+ * allow MT5 to outlive the VNC session and keep its display. The
+ * resource cost of keeping Xvnc alive post-login is acceptable
+ * (KasmVNC is ~50 MB RSS idle); if this becomes a problem on small
+ * VPSes we can revisit (e.g. switch MT5 to xvfb-run headless once
+ * `mt5.initialize()` is proven to work without a real display).
  */
-import { execFile, execFileSync, spawn } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { writeFileSync, existsSync, readFileSync } from 'node:fs';
 import { promisify } from 'node:util';
 import { log } from '../log.js';
+import type { Mt5TcpServer } from './mt5-tcp-server.js';
 
 const execFileP = promisify(execFile);
 
@@ -92,6 +121,14 @@ export function readSlotState(
 
 export type StartLoginDetectorOpts = {
   onTransition: LoginCallback;
+  /**
+   * v53: the slot's MT5 TCP server. When the detector sees a login
+   * transition (logged_out → logged_in, or vice versa) it calls
+   * `tcp.publish({type:'event', kind:'account', data:{logged_in:...}})`
+   * so the Mt5Connector flips loggedIn on its per-account record.
+   * Optional: pass undefined in dev (no MT5) and the detector is a no-op.
+   */
+  tcp?: Pick<Mt5TcpServer, 'publish'>;
   /** Override the state file path (mostly for tests). */
   stateFile?: string;
   /** Override poll interval (mostly for tests). */
@@ -107,30 +144,36 @@ export function startLoginDetector(opts: StartLoginDetectorOpts): () => void {
   const interval = opts.intervalMs ?? POLL_INTERVAL_MS;
 
   let stopped = false;
-  let triggered = false;
+  // v53: track login state as a state machine (logged_out /
+  // logging_in / logged_in) so the detector can fire both
+  // transitions and so a logout also publishes {logged_in:false}.
+  let prev: 'unknown' | 'logged_out' | 'logged_in' = 'unknown';
 
-  // If the slot is already operational, skip the watcher.
+  // Initial state: if the slot is already operational, treat that
+  // as the boot-time state and start the loop. We don't kill VNC on
+  // boot — that's the one-time transition the original code handled.
   if (readSlotState(stateFile) === 'operational') {
-    log.info(
-      'slot already operational on boot — login detector idle',
-    );
+    prev = 'logged_in';
+    if (opts.tcp) {
+      opts.tcp.publish({
+        type: 'event',
+        kind: 'account',
+        data: { logged_in: true },
+      });
+    }
     void opts.onTransition();
-    return () => {
-      stopped = true;
-    };
   }
 
   const tick = async (): Promise<void> => {
-    if (stopped || triggered) return;
-    if (readSlotState(stateFile) === 'operational') {
-      triggered = true;
-      log.info('state already operational — exiting detector loop');
-      return;
-    }
-    const ok = await isLoggedIn();
-    log.info({ ok }, 'login-detector tick');
-    if (ok) {
-      triggered = true;
+    if (stopped) return;
+    const now = await isLoggedIn();
+    const next: 'logged_out' | 'logged_in' = now ? 'logged_in' : 'logged_out';
+    if (next === prev) return; // no transition
+    log.info({ from: prev, to: next }, 'login-detector state transition');
+    prev = next;
+    if (next === 'logged_in') {
+      // First-time login (or login after a logout): write state file,
+      // kill the VNC chain, fire onTransition, publish account event.
       try {
         writeFileSync(stateFile, 'operational\n', { mode: 0o600 });
       } catch (e) {
@@ -138,51 +181,15 @@ export function startLoginDetector(opts: StartLoginDetectorOpts): () => void {
           { err: (e as Error).message },
           'failed to write state file',
         );
-        triggered = false; // try again next tick
         return;
       }
-      log.info(
-        'MT5 login detected — transitioning slot to operational',
-      );
-      try {
-        // Cascade-kill the VNC chain synchronously so we know each
-        // step succeeded before moving on. pkill -9 -f <pattern>
-        // matches the process command line. s6-svc -D marks the
-        // service as `want down` so it doesn't restart.
-        for (const pat of [
-          'Xvnc',
-          'openbox',
-          'kclient',
-          'nginx: master',
-          'pulseaudio',
-        ]) {
-          try {
-            execFileSync('pkill', ['-9', '-f', pat], { stdio: 'ignore' });
-          } catch {
-            /* pkill exits 1 if no process matched — that's fine */
-          }
-        }
-        for (const svc of [
-          'svc-de',
-          'svc-kclient',
-          'svc-kasmvnc',
-          'svc-nginx',
-        ]) {
-          try {
-            execFileSync('s6-svc', ['-D', `/run/service/${svc}`], {
-              stdio: 'ignore',
-            });
-          } catch {
-            /* ignore — s6 may not be visible to slot's child env */
-          }
-        }
-        log.info('VNC chain killed — slot is now operational');
-      } catch (e) {
-        log.warn(
-          { err: (e as Error).message },
-          'cascade-kill VNC services failed (slot will still mark operational)',
-        );
-      }
+      log.info('MT5 login detected — transitioning slot to operational');
+      // v54: cascade-kill of the VNC chain removed. See the file header
+      // for why — killing Xvnc/openbox took MT5's X display with it,
+      // so `mt5.account_info()` from the Python account-publisher
+      // always returned None (MT5 was dead). The slot now leaves
+      // svc-de/svc-kclient/svc-kasmvnc/svc-nginx running so MT5 keeps
+      // its display and the Python side can read account_info().
       try {
         await opts.onTransition();
       } catch (e) {
@@ -190,6 +197,33 @@ export function startLoginDetector(opts: StartLoginDetectorOpts): () => void {
           { err: (e as Error).message },
           'onTransition callback failed',
         );
+      }
+      if (opts.tcp) {
+        opts.tcp.publish({
+          type: 'event',
+          kind: 'account',
+          data: { logged_in: true },
+        });
+      }
+    } else {
+      // Logout: write the state file back to pending_login so a
+      // re-login re-runs the cascade. Publish {logged_in:false} so
+      // /v1/state flips back.
+      log.info('MT5 logout detected — slot returning to pending_login');
+      try {
+        writeFileSync(stateFile, 'pending_login\n', { mode: 0o600 });
+      } catch (e) {
+        log.error(
+          { err: (e as Error).message },
+          'failed to write state file on logout',
+        );
+      }
+      if (opts.tcp) {
+        opts.tcp.publish({
+          type: 'event',
+          kind: 'account',
+          data: { logged_in: false },
+        });
       }
     }
   };
