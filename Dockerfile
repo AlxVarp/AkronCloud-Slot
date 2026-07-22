@@ -362,6 +362,91 @@ PY
 
 RUN chown -R abc:abc /config/.wine
 
+# ─── v54: Python 3.9.13 (amd64) + MetaTrader5 + numpy in the wineprefix ──
+# Goal: the slot needs `balance: N, equity: M` in /v1/state without the
+# user having to manually enable SlotService.ex5 (which doesn't autostart
+# on a fresh WINEPREFIX). The standard MT5 Python integration does this:
+# a Python script under wine calls `MetaTrader5.initialize()` +
+# `mt5.account_info()` and pushes the result to the slot over TCP 7778.
+# The user only has to log in to MT5 normally — no MQL5 service, no VNC
+# clicks.
+#
+# Idempotent: re-applying the image over an existing WINEPREFIX just
+# upserts the install. We gate on `/config/.wine/drive_c/Python39/python.exe`.
+#
+# Install path: /config/.wine/drive_c/Python39/ (64-bit). The base image
+# already has a 32-bit Python at C:\Python39-32\ for MQL5 scripts — we
+# leave it alone.
+#
+# Pinned wheels (verified working in 2026-07-22 step1-validation test
+# container). Hashes live in the URL — PyPI serves them at the path.
+RUN WINEPREFIX=/config/.wine \
+    PY64="$WINEPREFIX/drive_c/Python39" \
+ && if [ ! -x "$PY64/python.exe" ]; then \
+      echo "[v54] Installing 64-bit Python + MetaTrader5 into wineprefix..." && \
+      mkdir -p /tmp/setup && cd /tmp/setup && \
+      curl -fsSL -o py64.zip \
+        https://www.python.org/ftp/python/3.9.13/python-3.9.13-embed-amd64.zip && \
+      curl -fsSL -o mt5.whl \
+        https://files.pythonhosted.org/packages/6a/05/2da597e23c6ab603ebb1afe0925e6c17656830948987c13768890202cb59/metatrader5-5.0.5735-cp39-cp39-win_amd64.whl && \
+      curl -fsSL -o numpy.whl \
+        https://files.pythonhosted.org/packages/b5/42/054082bd8220bbf6f297f982f0a8f5479fcbc55c8b511d928df07b965869/numpy-1.26.4-cp39-cp39-win_amd64.whl && \
+      mkdir -p "$PY64" && \
+      (cd "$PY64" && unzip -q /tmp/setup/py64.zip) && \
+      echo 'Lib\\site-packages' >> "$PY64/python39._pth" && \
+      mkdir -p "$PY64/Lib/site-packages" && \
+      unzip -q /tmp/setup/mt5.whl -d /tmp/setup/mt5_extract && \
+      cp -r /tmp/setup/mt5_extract/MetaTrader5 "$PY64/Lib/site-packages/" && \
+      unzip -q /tmp/setup/numpy.whl -d /tmp/setup/np_extract && \
+      cp -r /tmp/setup/np_extract/numpy "$PY64/Lib/site-packages/" && \
+      cp -r /tmp/setup/np_extract/numpy-1.26.4.dist-info "$PY64/Lib/site-packages/" && \
+      cp -r /tmp/setup/np_extract/numpy.libs "$PY64/Lib/site-packages/" && \
+      cp "$WINEPREFIX/drive_c/windows/system32/msvcp140.dll"     "$PY64/" && \
+      cp "$WINEPREFIX/drive_c/windows/system32/vcruntime140.dll" "$PY64/" && \
+      cp "$WINEPREFIX/drive_c/windows/system32/vcruntime140_1.dll" "$PY64/" && \
+      cp "$WINEPREFIX/drive_c/windows/system32/ucrtbase.dll"     "$PY64/" && \
+      rm -rf /tmp/setup && \
+      echo "[v54] 64-bit Python + MetaTrader5 install complete at $PY64"; \
+    else \
+      echo "[v54] 64-bit Python already installed at $PY64 — skipping"; \
+    fi \
+ && chown -R abc:abc "$PY64"
+
+# ─── v54: mt5-account-publisher.py — pushes account events to slot ───
+# Sits alongside slot's Mt5TcpServer (TCP 127.0.0.1:7778, newline-
+# delimited JSON, same wire protocol as SlotService.ex5 would use).
+# Reads `mt5.account_info()` on a 1.5s poll, diffs against last frame,
+# publishes only on change.
+COPY src/services/mt5-account-publisher.py /opt/akron-mt5-account-publisher.py
+RUN chmod +x /opt/akron-mt5-account-publisher.py
+
+# ─── v54: s6 service — runs account-publisher after MT5 is up ────────
+# Longrun, depends on svc-de (the openbox session that launches MT5).
+# Sets the env vars the recipe needs (WINEPREFIX, HOME, XDG_RUNTIME_DIR,
+# DISPLAY, PYTHONHASHSEED=0). PYTHONHASHSEED=0 is mandatory because
+# wine's advapi32.SystemFunction036 is unimplemented and crashes Python
+# before any code runs.
+RUN mkdir -p /etc/s6-overlay/s6-rc.d/svc-mt5-account-publisher
+RUN cat > /etc/s6-overlay/s6-rc.d/svc-mt5-account-publisher/run <<'EOSVCAP'
+#!/usr/bin/with-contenv bash
+export WINEPREFIX=/config/.wine
+export WINEDEBUG=-all
+export HOME=/config
+export XDG_RUNTIME_DIR=/config/.XDG
+export DISPLAY=:0
+export PYTHONHASHSEED=0
+cd /config
+exec s6-setuidgid abc /opt/wine-stable/bin/wine \
+  /config/.wine/drive_c/Python39/python.exe \
+  /opt/akron-mt5-account-publisher.py
+EOSVCAP
+RUN chmod +x /etc/s6-overlay/s6-rc.d/svc-mt5-account-publisher/run
+RUN printf 'longrun\n' > /etc/s6-overlay/s6-rc.d/svc-mt5-account-publisher/type
+RUN mkdir -p /etc/s6-overlay/s6-rc.d/svc-mt5-account-publisher/dependencies.d && \
+    ln -sfn /etc/s6-overlay/s6-rc.d/svc-de \
+            /etc/s6-overlay/s6-rc.d/svc-mt5-account-publisher/dependencies.d/svc-de
+RUN touch /etc/s6-overlay/s6-rc.d/user/contents.d/svc-mt5-account-publisher
+
 EXPOSE 7777
 HEALTHCHECK --interval=30s --timeout=3s --start-period=30s --retries=3 \
   CMD /opt/node20/bin/node -e "fetch('http://127.0.0.1:7777/v1/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
