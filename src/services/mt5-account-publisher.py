@@ -185,6 +185,10 @@ def loop() -> int:
     # assignment) raises UnboundLocalError, killing the service.
     global _mt5_ready
 
+    log.info(
+        "publisher starting (slot=%s:%d, poll=%.1fs, init_timeout=%.0fs, mt5_available=%s)",
+        SLOT_HOST, SLOT_PORT, POLL_SECS, INIT_TIMEOUT_SECS, HAS_MT5,
+    )
     if not HAS_MT5:
         log.error("MetaTrader5 not importable: %s", IMPORT_ERROR)
         log.error("publisher will run in heartbeat-only mode")
@@ -201,36 +205,39 @@ def loop() -> int:
 
         if HAS_MT5 and not _mt5_ready:
 
-            if now - init_started_at > INIT_TIMEOUT_SECS:
-                # We've been retrying too long without success. Tell the
-                # slot via last_error and back off the init attempt.
-                if last_sent is None or last_sent.get("last_error") != "mt5-init-timeout":
-                    payload = frame(
-                        "account",
-                        {
-                            "logged_in": False,
-                            "last_error": "mt5-init-timeout",
-                        },
-                    )
-                    if client.send(payload):
-                        last_sent = {"last_error": "mt5-init-timeout"}
-                        log.error("mt5.initialize() did not succeed within %.0fs", INIT_TIMEOUT_SECS)
-
-            elif try_init_mt5():
+            # Always try to init, every iteration. The C-extension is
+            # idempotent: calling mt5.initialize() repeatedly while
+            # not yet connected is safe. The previous version stopped
+            # trying after INIT_TIMEOUT_SECS elapsed, which left the
+            # publisher stuck in heartbeat-only mode forever — even
+            # when MT5 became ready much later.
+            if try_init_mt5():
                 _mt5_ready = True
                 log.info("MT5 ready — entering account-info poll loop")
 
             else:
-                # Throttle: only retry init every INIT_RETRY_SECS
+                # Pick the right last_error message based on how long
+                # we've been trying. The first INIT_TIMEOUT_SECS of
+                # failure we call it "pending" (transient); after that
+                # we call it "timeout" but keep retrying.
+                elapsed = now - init_started_at
+                err_msg = "mt5-init-timeout" if elapsed > INIT_TIMEOUT_SECS else "mt5-init-pending"
+
+                # Throttle publishes to once every INIT_RETRY_SECS, and
+                # dedupe so we don't spam the slot with the same message.
                 if now - last_heartbeat >= INIT_RETRY_SECS:
-                    payload = frame(
-                        "account",
-                        {
-                            "logged_in": False,
-                            "last_error": "mt5-init-pending",
-                        },
-                    )
-                    client.send(payload)  # best-effort
+                    if last_sent is None or last_sent.get("last_error") != err_msg:
+                        payload = frame(
+                            "account",
+                            {"logged_in": False, "last_error": err_msg},
+                        )
+                        if client.send(payload):
+                            last_sent = {"last_error": err_msg}
+                            if err_msg == "mt5-init-timeout":
+                                log.error(
+                                    "mt5.initialize() has not succeeded in %.0fs — still retrying",
+                                    INIT_TIMEOUT_SECS,
+                                )
                     last_heartbeat = now
                 time.sleep(min(POLL_SECS, INIT_RETRY_SECS))
                 continue
