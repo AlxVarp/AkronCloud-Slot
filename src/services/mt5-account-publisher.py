@@ -178,6 +178,13 @@ def try_init_mt5() -> bool:
 
 def loop() -> int:
     """Main poll loop. Returns exit code (always 0 — we restart via s6)."""
+    # _mt5_ready / _stop are module globals but Python's scoping rules
+    # treat any name that is *assigned* anywhere in a function as a
+    # local variable throughout that function. Without the `global`
+    # declaration the first read of `_mt5_ready` (before any
+    # assignment) raises UnboundLocalError, killing the service.
+    global _mt5_ready
+
     if not HAS_MT5:
         log.error("MetaTrader5 not importable: %s", IMPORT_ERROR)
         log.error("publisher will run in heartbeat-only mode")
