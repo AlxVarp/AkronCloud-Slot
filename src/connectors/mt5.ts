@@ -110,7 +110,21 @@ export class Mt5Connector implements BrokerConnector {
 
   async connect(creds: BrokerCreds): Promise<{ accountRef: string }> {
     const ref = refFor(creds);
-    const rec: AccountRecord = {
+    // BUG FIX: previous version created a fresh AccountRecord with
+    // loggedIn=false / balance=0 every time connect() was called,
+    // and `this.accounts.set(ref, rec)` overwrote any existing state.
+    // Effect: every POST /v1/sync (which calls validateAccount →
+    // connect) wiped the connector's view of the user's logged-in
+    // account and reset /v1/state.connector to loggedIn:false /
+    // balance:0 until the next MQL5 publisher publish recovered it
+    // (which could take 15s+ depending on init retries).
+    //
+    // Correct behavior: only create a fresh record if we don't
+    // already know about this account. Preserve the existing
+    // loggedIn / balance / equity so concurrent sync triggers
+    // don't clobber the MQL5 publisher's just-published state.
+    const existing = this.accounts.get(ref);
+    const rec: AccountRecord = existing ?? {
       ref,
       broker_server: creds.server,
       broker_login: creds.login,
