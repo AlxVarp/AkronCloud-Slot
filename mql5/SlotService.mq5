@@ -96,6 +96,12 @@ int OnStart()
    return INIT_SUCCEEDED;
 }
 
+// OnDeinit in #property services is flagged as "useless" by the
+// compiler — the framework doesn't reliably call it. We keep it
+// anyway for socket cleanup because MetaEditor build 5800 fires
+// it on graceful shutdowns, and ignoring it would leak the socket.
+// #pragma suppresses the "useless event handler" warning.
+#pragma warning disable 144
 void OnDeinit(const int reason)
 {
    if(g_cmdSock != INVALID_SOCKET) {
@@ -104,6 +110,7 @@ void OnDeinit(const int reason)
    }
    WSACleanup();
 }
+#pragma warning restore 144
 
 void OnTimer()
 {
@@ -601,16 +608,20 @@ string HandlePositions(const string body)
       if(!PositionSelectByTicket(ticket)) continue;
       if(!first) out += ",";
       first = false;
-      double vol  = PositionGetDouble(ticket, POSITION_VOLUME);
-      double open = PositionGetDouble(ticket, POSITION_PRICE_OPEN);
-      double cur  = PositionGetDouble(ticket, POSITION_PRICE_CURRENT);
-      double sl   = PositionGetDouble(ticket, POSITION_SL);
-      double tp   = PositionGetDouble(ticket, POSITION_TP);
-      double pnl  = PositionGetDouble(ticket, POSITION_PROFIT);
-      long   type = PositionGetInteger(ticket, POSITION_TYPE);
-      long   magic = PositionGetInteger(ticket, POSITION_MAGIC);
-      string comment = PositionGetString(ticket, POSITION_COMMENT);
-      datetime time = (datetime)PositionGetInteger(ticket, POSITION_TIME);
+      // After PositionSelectByTicket(), the getters take ONE arg (the property).
+      string sym = PositionGetString(POSITION_SYMBOL);
+      int digits = SymbolInfoInteger(sym, SYMBOL_DIGITS);
+      double vol  = PositionGetDouble(POSITION_VOLUME);
+      double open = PositionGetDouble(POSITION_PRICE_OPEN);
+      double cur  = PositionGetDouble(POSITION_PRICE_CURRENT);
+      double sl   = PositionGetDouble(POSITION_SL);
+      double tp   = PositionGetDouble(POSITION_TP);
+      double pnl  = PositionGetDouble(POSITION_PROFIT);
+      double swap = PositionGetDouble(POSITION_SWAP);
+      long   type = PositionGetInteger(POSITION_TYPE);
+      long   magic = PositionGetInteger(POSITION_MAGIC);
+      string comment = PositionGetString(POSITION_COMMENT);
+      datetime time = (datetime)PositionGetInteger(POSITION_TIME);
       out += StringFormat(
          "{\"ticket\":%I64d,\"symbol\":\"%s\",\"magic\":%I64d,"
           "\"side\":\"%s\",\"volume\":%.2f,"
@@ -619,16 +630,13 @@ string HandlePositions(const string body)
           "\"profit\":%.2f,\"swap\":%.2f,"
           "\"comment\":\"%s\","
           "\"time\":%d}",
-         ticket,
-         PositionGetString(ticket, POSITION_SYMBOL),
-         magic,
+         ticket, sym, magic,
          (type == POSITION_TYPE_BUY ? "buy" : "sell"),
          vol,
          // %.*f: precision (digits) BEFORE the value
-         SymbolInfoInteger(PositionGetString(ticket, POSITION_SYMBOL), SYMBOL_DIGITS), open,
-         SymbolInfoInteger(PositionGetString(ticket, POSITION_SYMBOL), SYMBOL_DIGITS), cur,
-         sl, tp, pnl,
-         PositionGetDouble(ticket, POSITION_SWAP),
+         digits, open,
+         digits, cur,
+         sl, tp, pnl, swap,
          JsonEscape(comment),
          time
       );
@@ -653,18 +661,20 @@ string HandleOrders(const string body)
       if(!OrderSelect(ticket)) continue;
       if(!first) out += ",";
       first = false;
-      long   type   = (long)OrderGetInteger(ticket, ORDER_TYPE);
-      double vol    = OrderGetDouble(ticket, ORDER_VOLUME_INITIAL);
-      double curVol = OrderGetDouble(ticket, ORDER_VOLUME_CURRENT);
-      double price  = OrderGetDouble(ticket, ORDER_PRICE_OPEN);
-      double sl     = OrderGetDouble(ticket, ORDER_SL);
-      double tp     = OrderGetDouble(ticket, ORDER_TP);
-      double pnl    = OrderGetDouble(ticket, ORDER_PROFIT);
-      long   state  = (long)OrderGetInteger(ticket, ORDER_STATE);
-      long   magic  = OrderGetInteger(ticket, ORDER_MAGIC);
-      string sym    = OrderGetString(ticket, ORDER_SYMBOL);
-      string comment = OrderGetString(ticket, ORDER_COMMENT);
-      datetime setup = (datetime)OrderGetInteger(ticket, ORDER_TIME_SETUP);
+      // After OrderSelect(), the getters take ONE arg (the property).
+      // NOTE: pending orders do NOT have a profit field in MQL5
+      // build 5800 (ORDER_PROFIT was added later). We omit it.
+      long   type   = (long)OrderGetInteger(ORDER_TYPE);
+      double vol    = OrderGetDouble(ORDER_VOLUME_INITIAL);
+      double curVol = OrderGetDouble(ORDER_VOLUME_CURRENT);
+      double price  = OrderGetDouble(ORDER_PRICE_OPEN);
+      double sl     = OrderGetDouble(ORDER_SL);
+      double tp     = OrderGetDouble(ORDER_TP);
+      long   state  = (long)OrderGetInteger(ORDER_STATE);
+      long   magic  = OrderGetInteger(ORDER_MAGIC);
+      string sym    = OrderGetString(ORDER_SYMBOL);
+      string comment = OrderGetString(ORDER_COMMENT);
+      datetime setup = (datetime)OrderGetInteger(ORDER_TIME_SETUP);
       string type_str;
       if(type == ORDER_TYPE_BUY)        type_str = "buy_market";
       else if(type == ORDER_TYPE_SELL)  type_str = "sell_market";
@@ -678,9 +688,9 @@ string HandleOrders(const string body)
           "\"type\":\"%s\",\"state\":%d,"
           "\"volume_initial\":%.2f,\"volume_current\":%.2f,"
           "\"price\":%.5f,\"sl\":%.5f,\"tp\":%.5f,"
-          "\"profit\":%.2f,\"comment\":\"%s\",\"setup_time\":%d}",
+          "\"comment\":\"%s\",\"setup_time\":%d}",
          ticket, sym, magic, type_str, state,
-         vol, curVol, price, sl, tp, pnl,
+         vol, curVol, price, sl, tp,
          JsonEscape(comment), setup
       );
    }
@@ -714,19 +724,18 @@ string HandleHistory(const string body)
       ulong ticket = HistoryDealGetTicket(i);
       if(ticket == 0) continue;
       long   entry = (long)HistoryDealGetInteger(ticket, DEAL_ENTRY);
-      // Skip balance/credit deals — only trade deals
+      // Skip non-trade deals — only IN/INOUT entries are actual trades
       if(entry == DEAL_ENTRY_OUT) continue;
       if(!first) out += ",";
       first = false;
       emitted++;
+      // DEAL_TYPE: BUY / SELL (DEAL_DIRECTION is deprecated in 5800+)
       long   type  = (long)HistoryDealGetInteger(ticket, DEAL_TYPE);
-      long   dir   = (long)HistoryDealGetInteger(ticket, DEAL_DIRECTION);
       long   order = (long)HistoryDealGetInteger(ticket, DEAL_ORDER);
       long   posId = (long)HistoryDealGetInteger(ticket, DEAL_POSITION_ID);
       datetime t = (datetime)HistoryDealGetInteger(ticket, DEAL_TIME);
       string entry_str = "in";
-      if(entry == DEAL_ENTRY_OUT)      entry_str = "out";
-      else if(entry == DEAL_ENTRY_INOUT) entry_str = "inout";
+      if(entry == DEAL_ENTRY_INOUT) entry_str = "inout";
       string type_str = "buy";
       if(type == DEAL_TYPE_SELL) type_str = "sell";
       else if(type == DEAL_TYPE_BALANCE) type_str = "balance";
@@ -790,7 +799,7 @@ string HandleAccount(const string body)
        "\"leverage\":%I64d,\"trade_allowed\":%s,"
        "\"balance\":%.2f,\"equity\":%.2f,\"margin\":%.2f,"
        "\"margin_free\":%.2f,\"margin_level\":%.2f,"
-       "\"profit\":%.2f,\"currency_profit\":%.2f}",
+       "\"profit\":%.2f,\"commission\":%.2f}",
       AccountInfoInteger(ACCOUNT_LOGIN),
       AccountInfoString(ACCOUNT_SERVER),
       AccountInfoString(ACCOUNT_CURRENCY),
@@ -804,7 +813,9 @@ string HandleAccount(const string body)
       AccountInfoDouble(ACCOUNT_MARGIN_FREE),
       AccountInfoDouble(ACCOUNT_MARGIN_LEVEL),
       AccountInfoDouble(ACCOUNT_PROFIT),
-      AccountInfoDouble(ACCOUNT_COMMISSION_PROFIT)
+      // ACCOUNT_COMMISSION exists in build 5800;
+      // ACCOUNT_COMMISSION_PROFIT was added later and would break here.
+      AccountInfoDouble(ACCOUNT_COMMISSION)
    );
 }
 
