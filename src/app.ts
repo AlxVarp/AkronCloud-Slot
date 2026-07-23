@@ -51,10 +51,21 @@ export async function buildApp(cfg: AppConfig): Promise<FastifyInstance> {
   // Phase C / Ruta B1: always bring up the TCP server. The MT5
   // connector needs it. The legacy ZMQ/file bridge is no longer
   // supported — SlotService.mq5 is TCP-only.
+  //
+  // v2.11: in addition to the inbound events socket on 7778, we open
+  // an outbound command client to MQL5 on 7779 (where SlotService
+  // listens for commands). The inbound socket continues to receive
+  // events from SlotService + the Python account-publisher (multiple
+  // publishers, fine — events only push). Commands go over the
+  // outbound client so the publisher no longer displaces the slot's
+  // command channel. See mql5/SlotService.mq5 v2.11 header.
   const { startMt5TcpServer } = await import('./services/mt5-tcp-server.js');
+  const { Mt5CommandClient } = await import('./services/mt5-command-client.js');
+  const mt5CmdClient = new Mt5CommandClient();
   const mt5Tcp = await startMt5TcpServer({
     ledger,
     resolveAccount: (brokerLogin) => {
+      // (body unchanged — see below)
       // Phase A: single-account slot. Two fallback levels:
       //
       // 1. Exact match by broker_login when the event includes one
@@ -89,6 +100,7 @@ export async function buildApp(cfg: AppConfig): Promise<FastifyInstance> {
         .get() as AccountRow | undefined;
     },
   });
+  mt5Tcp.setCommandClient(mt5CmdClient);
 
   const connector = makeConnector(cfg.connectorId, { db, ledger, tcp: mt5Tcp });
   const deps: Deps = {

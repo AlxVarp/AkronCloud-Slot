@@ -1,27 +1,34 @@
 //+------------------------------------------------------------------+
 //| SlotService.mq5 - service that bridges the slot with MT5 via TCP |
 //|             (Phase C / Ruta B1 — replaces file-bridge stack)    |
+//|                       v2.11 — split commands port                 |
 //+------------------------------------------------------------------+
 //
 // Runs as a #property service, launched by MT5 at terminal startup
 // (registered in MQL5/profiles/default/services.ini). No chart
 // dependency, no template, no manual attach.
 //
-// Communicates with the slot over a single TCP socket on
-// 127.0.0.1:7778 (the slot binds; MQL5 connects). Wire protocol is
-// newline-delimited JSON. Maximum frame size 64 KB.
+// v2.11 splits commands and events onto separate TCP sockets to
+// resolve the single-TCP-client contention with the slot's Python
+// account-publisher (which also connects to 127.0.0.1:7778 to
+// publish account_status events). The slot listens on 7778 (events)
+// for both this service and the Python publisher. We open a SECOND
+// listening socket on 7779 — the slot opens an outbound TCP client
+// to us on 7779 to dispatch commands. See docs/sessions/2026-07-23-
+// v0.4-trading-api-handoff.md Session 2026-07-23 addendum.
 //
-//   MQL5 -> host (frames):
-//     {"type":"event","kind":"fill"|"order_state"|"position"|"account",
+// Wire protocol is newline-delimited JSON. Maximum frame size 64 KB.
+//
+//   MQL5 -> host on 7778 (events):
+//     {"type":"event","kind":"fill"|"order_state"|"position"|"account"|"state"|"startup",
 //      "data":{...},"ts":<epoch_ms>}
-//     {"type":"response","id":"<uuid>","ok":true|false,
-//      "result":{...}|"error":"..."}
 //
-//   host -> MQL5 (frames):
+//   host -> MQL5 on 7779 (commands) and MQL5 -> host on 7779 (responses):
 //     {"type":"command","id":"<uuid>","action":"open"|"close"|"cancel"|"sltp"
 //       |"modify_position"|"symbols"|"symbol"|"positions"|"orders"
-//       |"history"|"quote"|"account",
-//      "payload":{...}}
+//       |"history"|"quote"|"account","payload":{...}}
+//     {"type":"response","id":"<uuid>","ok":true|false,
+//      "result":{...}|"error":"..."}
 //
 // Requires `AllowDllImport=1` in MQL5/Config/terminal.ini (the
 // Dockerfile sets this in Phase 1 build step). Pulls ws2_32.dll
@@ -29,12 +36,12 @@
 //
 //+------------------------------------------------------------------+
 #property copyright "akroncloud-slot"
-#property version   "2.10"
+#property version   "2.11"
 #property service
 #property strict  false
 
 //+------------------------------------------------------------------+
-//| ws2_32 (Windows Sockets) imports — Phase C / Ruta B1             |
+//| ws2_32 (Windows Sockets) imports — Phase C / Ruta B1 + v2.11     |
 //+------------------------------------------------------------------+
 #import "ws2_32.dll"
    int  WSAStartup(short wVersionRequested, uchar &lpWSAData[]);
@@ -46,6 +53,9 @@
    int  closesocket(int s);
    int  ioctlsocket(int s, long cmd, uchar &argp[]);
    int  WSAGetLastError();
+   int  bind(int s, uchar &name[], int namelen);
+   int  listen(int s, int backlog);
+   int  accept(int s, uchar &addr[], int &namelen);
 #import
 
 //+------------------------------------------------------------------+
@@ -72,6 +82,7 @@ input string  DefaultSymbol       = "EURUSD";
 input int     PollSeconds         = 1;
 input string  CmdSocketHost       = "127.0.0.1";
 input int     CmdSocketPort       = 7778;
+input int     CmdWebSocketPort    = 7779;
 input int     StartupMarkerWaitMs = 3000;
 
 datetime g_lastPollTime       = 0;
@@ -83,14 +94,36 @@ string g_recvBuf     = "";
 int    g_lastWSAErr  = 0;
 bool   g_lastConnected = false;
 
+// v2.11 — split commands port (TCP server on 7779) from events port
+// (TCP client to slot:7778). Solves the single-TCP-client contention
+// with the Python account-publisher. See docs/sessions/2026-07-23-
+// v0.4-trading-api-handoff.md (Phase C — TCP contention section).
+int    g_cmdListenSock = INVALID_SOCKET;
+// Active client connections on the command server. Keyed by socket
+// handle, value is the receive buffer (string). Sockets stay open
+// until the client closes or the service shuts down.
+#define MAX_CMD_CLIENTS 4
+int    g_cmdClients[];
+string g_cmdClientBufs[];
+
 int OnStart()
 {
-   PrintFormat("SlotService: start on %s poll=%ds", _Symbol, PollSeconds);
+   PrintFormat("SlotService: start on %s poll=%ds cmd_ws=%d", _Symbol, PollSeconds, CmdWebSocketPort);
    uchar wsadata[408];
    int rc = WSAStartup(0x0202, wsadata);
    if(rc != 0) { Print("SlotService: WSAStartup failed"); return INIT_FAILED; }
+
+   // Events still go over the original TCP client → slot:7778
    ConnectToSlot();
    SendStartupEvent();
+
+   // Commands come in over a new TCP server socket on port 7779 (v2.11).
+   // The slot opens a TCP client to us, sends {"type":"command",...}
+   // frames, we process and reply with {"type":"response",...}.
+   // This decouples command dispatch from the events TCP socket so
+   // the Python account-publisher no longer competes with us for it.
+   StartCommandServer();
+
    g_lastPollTime = TimeCurrent();
    EventSetMillisecondTimer(MathMax(50, PollSeconds * 1000));
    return INIT_SUCCEEDED;
@@ -107,57 +140,31 @@ void OnDeinit(const int reason)
       closesocket(g_cmdSock);
       g_cmdSock = INVALID_SOCKET;
    }
+   StopCommandServer();
    WSACleanup();
 }
 
 void OnTimer()
 {
+   // v2.11: events-only over the TCP client (slot:7778). Command
+   // dispatch is handled by PollCommandServer() on the TCP server
+   // port (7779). OnTimer now just keeps the events TCP alive,
+   // polls the command server, and pushes state snapshots.
+
    if(g_cmdSock == INVALID_SOCKET) {
       ConnectToSlot();
       if(g_cmdSock == INVALID_SOCKET) return;
    }
 
-   // 1) Drain recv — non-blocking, accumulate frames by '\n'
-   uchar buf[RECV_CHUNK_MAX];
-   int n = recv(g_cmdSock, buf, RECV_CHUNK_MAX, MSG_DONTWAIT);
-   if(n == SOCKET_ERROR) {
-      g_lastWSAErr = WSAGetLastError();
-      PrintFormat("SlotService: recv error %d, closing", g_lastWSAErr);
-      closesocket(g_cmdSock);
-      g_cmdSock = INVALID_SOCKET;
-      return;
-   }
-   if(n == 0) {
-      Print("SlotService: peer closed");
-      closesocket(g_cmdSock);
-      g_cmdSock = INVALID_SOCKET;
-      return;
-   }
-   if(n > 0) {
-      g_recvBuf += CharArrayToString(buf, 0, n, CP_UTF8);
-      int idx;
-      while((idx = StringFind(g_recvBuf, "\n")) >= 0) {
-         string frame = StringSubstr(g_recvBuf, 0, idx);
-         g_recvBuf = StringSubstr(g_recvBuf, idx + 1);
-         ProcessCommandFrame(frame);
-      }
-      if(StringLen(g_recvBuf) > RECV_BUF_MAX) {
-         Print("SlotService: recv buffer overflow, dropping");
-         g_recvBuf = "";
-      }
-   }
+   PollCommandServer();
 
-   // 2) Periodically push state snapshot
+   // Periodically push state snapshot + broker connection change.
    if(TimeCurrent() - g_lastPollTime >= PollSeconds) {
       g_lastPollTime = TimeCurrent();
       SendFrame("{\"type\":\"event\",\"kind\":\"state\",\"ts\":"
                 + TimeToMs(TimeCurrent()) + ",\"data\":"
                 + BuildStateJson() + "}");
 
-      // Detect broker connection state change. Emits account_status
-      // so the slot's connector can flip `loggedIn` for the right
-      // account. Fires on every transition (login/logout/connect-loss)
-      // and on the first tick after MT5 boot (initial state).
       bool connected = (bool)TerminalInfoInteger(TERMINAL_CONNECTED);
       if(connected != g_lastConnected) {
          g_lastConnected = connected;
@@ -286,7 +293,7 @@ void SendStartupEvent()
              + TimeToMs(TimeCurrent()) + "}");
 }
 
-void ProcessCommandFrame(string frame)
+string HandleCommandAndRespond(string frame)
 {
    string id      = JsonField(frame, "id");
    string action = JsonField(frame, "action");
@@ -306,9 +313,15 @@ void ProcessCommandFrame(string frame)
    else if(action == "history")    { ok = true; result = HandleHistory(frame); }
    else if(action == "quote")      { ok = true; result = HandleQuote(frame); }
    else if(action == "account")    { ok = true; result = HandleAccount(frame); }
-   SendFrame("{\"type\":\"response\",\"id\":\"" + id
-             + "\",\"ok\":" + (ok ? "true" : "false")
-             + ",\"result\":" + result + "}");
+   return "{\"type\":\"response\",\"id\":\"" + id
+          + "\",\"ok\":" + (ok ? "true" : "false")
+          + ",\"result\":" + result + "}\n";
+}
+
+void ProcessCommandFrame(string frame)
+{
+   string response = HandleCommandAndRespond(frame);
+   if(StringLen(response) > 0) SendFrame(response);
 }
 
 //+------------------------------------------------------------------+
@@ -855,4 +868,138 @@ string JsonField(const string body, const string path)
       sub = val;
    }
    return sub;
+}
+//+------------------------------------------------------------------+
+//| v2.11 — command server on TCP 7779 (slot opens client to us)    |
+//+------------------------------------------------------------------+
+
+void StartCommandServer()
+{
+   if(g_cmdListenSock != INVALID_SOCKET) return;
+
+   ArrayResize(g_cmdClients, 0);
+   ArrayResize(g_cmdClientBufs, 0);
+
+   int s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+   if(s == INVALID_SOCKET) {
+      PrintFormat("SlotService: cmd server socket() err=%d", WSAGetLastError());
+      return;
+   }
+   uchar addr[16];
+   ArrayInitialize(addr, 0);
+   addr[0] = (uchar)(AF_INET & 0xFF);
+   addr[1] = (uchar)((AF_INET >> 8) & 0xFF);
+   ushort port_be = HTONS((ushort)CmdWebSocketPort);
+   addr[2] = (uchar)(port_be & 0xFF);
+   addr[3] = (uchar)((port_be >> 8) & 0xFF);
+   addr[4] = 127; addr[5] = 0; addr[6] = 0; addr[7] = 1;
+   if(bind(s, addr, 16) == SOCKET_ERROR) {
+      PrintFormat("SlotService: cmd bind err=%d", WSAGetLastError());
+      closesocket(s);
+      return;
+   }
+   if(listen(s, MAX_CMD_CLIENTS) == SOCKET_ERROR) {
+      PrintFormat("SlotService: cmd listen err=%d", WSAGetLastError());
+      closesocket(s);
+      return;
+   }
+   g_cmdListenSock = s;
+   PrintFormat("SlotService: command server listening on 127.0.0.1:%d", CmdWebSocketPort);
+}
+
+void StopCommandServer()
+{
+   for(int i = 0; i < ArraySize(g_cmdClients); i++) {
+      closesocket(g_cmdClients[i]);
+   }
+   ArrayResize(g_cmdClients, 0);
+   ArrayResize(g_cmdClientBufs, 0);
+   if(g_cmdListenSock != INVALID_SOCKET) {
+      closesocket(g_cmdListenSock);
+      g_cmdListenSock = INVALID_SOCKET;
+   }
+}
+
+void PollCommandServer()
+{
+   if(g_cmdListenSock == INVALID_SOCKET) return;
+
+   for(int i = 0; i < MAX_CMD_CLIENTS; i++) {
+      uchar addr[16];
+      ArrayInitialize(addr, 0);
+      int namelen = 16;
+      int cli = accept(g_cmdListenSock, addr, namelen);
+      if(cli == INVALID_SOCKET) {
+         int err = WSAGetLastError();
+         if(err != 10035 && err != 11) {
+            PrintFormat("SlotService: cmd accept err=%d", err);
+         }
+         break;
+      }
+      if(ArraySize(g_cmdClients) >= MAX_CMD_CLIENTS) {
+         Print("SlotService: cmd max clients reached, rejecting");
+         closesocket(cli);
+         continue;
+      }
+      int idx = ArraySize(g_cmdClients);
+      ArrayResize(g_cmdClients, idx + 1);
+      ArrayResize(g_cmdClientBufs, idx + 1);
+      g_cmdClients[idx] = cli;
+      g_cmdClientBufs[idx] = "";
+      PrintFormat("SlotService: cmd client #%d accepted (sock=%d)", idx, cli);
+   }
+
+   for(int i = ArraySize(g_cmdClients) - 1; i >= 0; i--) {
+      int cli = g_cmdClients[i];
+      uchar buf[RECV_CHUNK_MAX];
+      int n = recv(cli, buf, RECV_CHUNK_MAX, MSG_DONTWAIT);
+      if(n == SOCKET_ERROR) {
+         int err = WSAGetLastError();
+         if(err != 10035 && err != 11) {
+            PrintFormat("SlotService: cmd recv err=%d, closing cli=%d", err, cli);
+            closesocket(cli);
+            CmdClientRemove(i);
+            continue;
+         }
+         n = 0;
+      }
+      if(n == 0) {
+         PrintFormat("SlotService: cmd cli=%d closed by peer", cli);
+         closesocket(cli);
+         CmdClientRemove(i);
+         continue;
+      }
+      if(n > 0) {
+         g_cmdClientBufs[i] += CharArrayToString(buf, 0, n, CP_UTF8);
+         int idx;
+         while((idx = StringFind(g_cmdClientBufs[i], "\n")) >= 0) {
+            string frame = StringSubstr(g_cmdClientBufs[i], 0, idx);
+            g_cmdClientBufs[i] = StringSubstr(g_cmdClientBufs[i], idx + 1);
+            string response = HandleCommandAndRespond(frame);
+            if(StringLen(response) > 0) {
+               uchar resp[];
+               StringToCharArray(response, resp, 0, CP_UTF8);
+               int slen = StringLen(response);
+               send(cli, resp, slen, 0);
+            }
+         }
+         if(StringLen(g_cmdClientBufs[i]) > RECV_BUF_MAX) {
+            Print("SlotService: cmd client buffer overflow, dropping connection");
+            closesocket(cli);
+            CmdClientRemove(i);
+         }
+      }
+   }
+}
+
+void CmdClientRemove(int idx)
+{
+   int n = ArraySize(g_cmdClients);
+   if(idx < 0 || idx >= n) return;
+   for(int j = idx; j < n - 1; j++) {
+      g_cmdClients[j]   = g_cmdClients[j+1];
+      g_cmdClientBufs[j] = g_cmdClientBufs[j+1];
+   }
+   ArrayResize(g_cmdClients, n - 1);
+   ArrayResize(g_cmdClientBufs, n - 1);
 }

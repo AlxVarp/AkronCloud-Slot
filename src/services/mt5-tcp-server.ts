@@ -128,6 +128,8 @@ export class Mt5TcpServer {
   private sock?: net.Socket;
   private recvBuf = '';
   private pending = new Map<string, PendingCommand>();
+  // v2.11: dedicated outbound command client (SlotService listens on 7779).
+  private cmdClient?: import('./mt5-command-client.js').Mt5CommandClient;
   private ledger: Ledger;
   private resolveAccount: (brokerLogin: string) => AccountRow | undefined;
   public onEvent?: (evt: ParsedEvent, account: AccountRow | undefined) => void;
@@ -182,11 +184,27 @@ export class Mt5TcpServer {
   }
 
   /**
-   * Send a command frame to MT5 and await the response. Generates a UUID,
-   * registers a pending promise, writes the frame, and resolves on the
-   * matching response or timeout.
+   * Send a command frame to MT5 and await the response. In v2.11 of
+   * SlotService.mq5, commands go over a dedicated outbound TCP
+   * connection to 127.0.0.1:7779 (separate from the events socket on
+   * 7778). The `Mt5CommandClient` instance is shared with the slot —
+   * see `app.ts` where it's constructed and passed in.
+   *
+   * Kept the legacy `pending` map / `CMD_TIMEOUT_MS` path as a
+   * fallback for the very rare case where the outbound client has not
+   * been wired (e.g. in tests). Once the client is wired we always
+   * use it; the fallback is just to avoid breaking the import graph
+   * during the rolling refactor.
    */
   dispatchCommand(cmd: object, id?: string): Promise<CommandResult> {
+    if (this.cmdClient) {
+      const action = (cmd as { action?: string }).action;
+      const payload = (cmd as { payload?: Record<string, unknown> }).payload ?? {};
+      return this.cmdClient
+        .dispatch(action ?? '', payload, { timeoutMs: CMD_TIMEOUT_MS })
+        .then((result) => ({ ok: true, result }))
+        .catch((err: Error) => ({ ok: false, error: err.message }));
+    }
     if (!this.sock || this.sock.destroyed) {
       return Promise.reject(new Error('MT5 socket not connected'));
     }
@@ -206,6 +224,15 @@ export class Mt5TcpServer {
         }
       });
     });
+  }
+
+  /**
+   * Wire the dedicated command client (v2.11+). SlotService.ex5
+   * listens on 127.0.0.1:7779 for commands; this client holds the
+   * slot's outbound connection to it.
+   */
+  setCommandClient(client: import('./mt5-command-client.js').Mt5CommandClient): void {
+    this.cmdClient = client;
   }
 
   isConnected(): boolean {
