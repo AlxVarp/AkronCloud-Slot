@@ -361,16 +361,20 @@ RUN touch /etc/s6-overlay/s6-rc.d/user/contents.d/svc-mt5-ocr-bridge
 # Compile step: copy the .mq5 source into the MQL5 Services dir,
 # then run metaeditor64.exe via xvfb-run wine to produce .ex5. The
 # compile writes .ex5 next to .mq5; we then COPY that artifact.
+#
+# Path escaping: the MQL5 install lives under "Program Files" which
+# has a space. Wine's Z:\ mapping requires doubled backslashes in the
+# argument string, which gets very messy inside Dockerfile RUN. To
+# avoid that we wrap the compile in a small shell script that's
+# copied into the image and called via /bin/sh.
 COPY ["mql5/SlotService.mq5", "/tmp/SlotService.mq5"]
-RUN mkdir -p "/config/.wine/drive_c/Program Files/MetaTrader 5/MQL5/Services" && \
+COPY scripts/compile-slot-service.sh /tmp/compile-slot-service.sh
+RUN chmod +x /tmp/compile-slot-service.sh && \
+    mkdir -p "/config/.wine/drive_c/Program Files/MetaTrader 5/MQL5/Services" && \
     cp /tmp/SlotService.mq5 "/config/.wine/drive_c/Program Files/MetaTrader 5/MQL5/Services/SlotService.mq5" && \
     chown abc:abc "/config/.wine/drive_c/Program Files/MetaTrader 5/MQL5/Services/SlotService.mq5" && \
-    su abc -c "export DISPLAY=:99 WINEPREFIX=/config/.wine && \
-                 xvfb-run -a --server-args='-screen 0 1024x768x24' wine \
-                   /config/.wine/drive_c/users/abc/MetaTrader\\ 5/MetaEditor64.exe /portable \
-                   /compile:\"Z:\\\\config\\\\.wine\\\\drive_c\\\\Program Files\\\\MetaTrader 5\\\\MQL5\\\\Services\\\\SlotService.mq5\" \
-                   /inc:\"Z:\\\\config\\\\.wine\\\\drive_c\\\\Program Files\\\\MetaTrader 5\\\\MQL5\" \
-                 2>&1 | tail -10" && \
+    chown abc:abc /tmp/compile-slot-service.sh && \
+    su abc -c "/tmp/compile-slot-service.sh" && \
     ls -la "/config/.wine/drive_c/Program Files/MetaTrader 5/MQL5/Services/" && \
     chown abc:abc "/config/.wine/drive_c/Program Files/MetaTrader 5/MQL5/Services/SlotService.ex5"
 COPY ["mql5/SlotService.ex5", "/config/.wine/drive_c/Program Files/MetaTrader 5/MQL5/Services/SlotService.ex5"]
