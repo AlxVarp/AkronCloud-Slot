@@ -175,8 +175,18 @@ export class Mt5CommandClient {
     s.on('close', () => {
       log.debug('mt5 command client disconnected');
       this.failPending(new Error('MT5 command socket closed'));
-      this.sock = null;
-      if (!this.destroyed) this.scheduleReconnect();
+      // Reconnect is owned by the 'error' handler — DON'T schedule here
+      // too. When the connect fails (ECONNREFUSED), the error handler
+      // destroys the socket and schedules a 2s reconnect. The destroyed
+      // socket then fires 'close' asynchronously, and if we also
+      // scheduled here we'd get a stack of overlapping timers causing
+      // a tight CPU-spinning reconnect storm. Only schedule from 'close'
+      // if the 'error' handler did NOT fire (i.e. a clean disconnect
+      // after a successful connection).
+      if (!this.destroyed && (!this.sock || this.sock === s)) {
+        this.sock = null;
+        this.scheduleReconnect();
+      }
     });
 
     this.sock = s;
