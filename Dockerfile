@@ -334,11 +334,11 @@ RUN chmod +x /etc/s6-overlay/s6-rc.d/svc-mt5-ocr-bridge/run
 RUN printf 'longrun\n' > /etc/s6-overlay/s6-rc.d/svc-mt5-ocr-bridge/type
 RUN touch /etc/s6-overlay/s6-rc.d/user/contents.d/svc-mt5-ocr-bridge
 
-# SlotService.mq5 → .ex5 — compiled at build time from the .mq5 source.
-# Service mode (commits a606493 + 0499462): #property service,
-# registered in services.ini + Wine registry below. MT5 launches
-# it at terminal startup, before any chart is loaded — no chart-
-# template dependency, no manual attach.
+# SlotService.mq5 → .ex5 — pre-compiled artifact (committed to the
+# repo at mql5/SlotService.ex5). Service mode (commits a606493 +
+# 0499462): #property service, registered in services.ini + Wine
+# registry below. MT5 launches it at terminal startup, before any
+# chart is loaded — no chart-template dependency, no manual attach.
 #
 # v52: paths moved from `users/abc/MetaTrader 5/` to
 # `Program Files/MetaTrader 5/`. The autostart (above) launches
@@ -358,32 +358,15 @@ RUN touch /etc/s6-overlay/s6-rc.d/user/contents.d/svc-mt5-ocr-bridge
 # header comment for the wire split. Same compile step produces
 # the v2.11 .ex5.
 #
-# Compile step: copy the .mq5 source into the MQL5 Services dir,
-# then run metaeditor64.exe via xvfb-run wine to produce .ex5. The
-# compile writes .ex5 next to .mq5; we then COPY that artifact.
-#
-# Path escaping: the MQL5 install lives under "Program Files" which
-# has a space. Wine's Z:\ mapping requires doubled backslashes in the
-# argument string, which gets very messy inside Dockerfile RUN. To
-# avoid that we wrap the compile in a small shell script that's
-# copied into the image and called via /bin/sh.
-#
-# xvfb lives in the build stage already (line 16), but the runtime
-# stage FROM akron-mt5-base doesn't have it — install here so the
-# metaeditor headless compile works inside this stage.
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends xvfb && \
-    rm -rf /var/lib/apt/lists/*
-COPY ["mql5/SlotService.mq5", "/tmp/SlotService.mq5"]
-COPY scripts/compile-slot-service.sh /tmp/compile-slot-service.sh
-RUN chmod +x /tmp/compile-slot-service.sh && \
-    mkdir -p "/config/.wine/drive_c/Program Files/MetaTrader 5/MQL5/Services" && \
-    cp /tmp/SlotService.mq5 "/config/.wine/drive_c/Program Files/MetaTrader 5/MQL5/Services/SlotService.mq5" && \
-    chown abc:abc "/config/.wine/drive_c/Program Files/MetaTrader 5/MQL5/Services/SlotService.mq5" && \
-    chown abc:abc /tmp/compile-slot-service.sh && \
-    su abc -c "/tmp/compile-slot-service.sh" && \
-    ls -la "/config/.wine/drive_c/Program Files/MetaTrader 5/MQL5/Services/" && \
-    chown abc:abc "/config/.wine/drive_c/Program Files/MetaTrader 5/MQL5/Services/SlotService.ex5"
+# Compile workflow: metaeditor64.exe CLI is flaky in wine 11.0
+# (long timeouts, hung processes). The .ex5 was therefore pre-
+# compiled in a separate environment and committed to the repo.
+# To rebuild SlotService.ex5 from source, run in the akron-mt5-base
+# runtime container (with xvfb installed):
+#   xvfb-run -a wine /config/.wine/drive_c/users/abc/MetaTrader\
+#     5/MetaEditor64.exe /portable \
+#     /compile:"Z:\\config\\.wine\\drive_c\\Program Files\\MetaTrader
+#       5\\MQL5\\Services\\SlotService.mq5"
 COPY ["mql5/SlotService.ex5", "/config/.wine/drive_c/Program Files/MetaTrader 5/MQL5/Services/SlotService.ex5"]
 RUN chown abc:abc \
    "/config/.wine/drive_c/Program Files/MetaTrader 5/MQL5/Services/SlotService.ex5"
