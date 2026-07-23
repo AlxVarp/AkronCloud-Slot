@@ -40,7 +40,7 @@ WORKDIR /app
 # system node breaks the desktop. We run the slot with /opt/node20
 # explicitly; everything else in the image keeps using v18.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends curl xz-utils ca-certificates \
+ && apt-get install -y --no-install-recommends curl xz-utils ca-certificates iptables \
  && curl -fsSL https://nodejs.org/dist/v20.20.2/node-v20.20.2-linux-x64.tar.xz \
       | tar -Jx -C /opt \
  && ln -sfn /opt/node-v20.20.2-linux-x64 /opt/node20 \
@@ -124,47 +124,36 @@ sleep infinity\n' \
     printf 'longrun\n' > /etc/s6-overlay/s6-rc.d/svc-sanitize/type && \
     touch /etc/s6-overlay/s6-rc.d/user/contents.d/svc-sanitize
 
-# akroncloud-slot: strip MT5's bundled liveupdate binary from every
-# profile directory at container boot. MT5 build 5836 (current as of
-# 2026-07) checks for liveupdate versions on every startup by spawning
-# the bundled `liveupdate/terminal64.exe /update /path:...` subprocess.
-# In this Wine 11.0 sandbox the liveupdate server is unreachable, so
-# the subprocess hangs without exiting, piling up 9+ zombie copies
-# that prevent the normal `terminal64.exe` from starting. The MT5
-# terminal then sits at the "Updating MetaTrader 5" splash forever
-# and never reaches the broker dashboard.
+# akroncloud-slot: persistent suppression of MT5's stuck-liveupdate
+# behavior. Replaces the previous svc-strip-mt5-liveupdate (which ran
+# ONCE at boot — MT5 would recreate the liveupdate/ subdir within
+# seconds and we'd be back in the zombie loop). The new service runs
+# forever (s6 longrun) with three layers of defense:
 #
-# Fix: `rm -rf` every `liveupdate/` subdir under any MT5 profile dir.
-# MT5's `terminal64.exe` checks for that binary's presence before
-# spawning it; if missing, it silently skips the liveupdate and
-# launches normally. Idempotent (rm -rf is no-op if absent). Runs
-# before svc-de so MT5's autostart launches into a clean state.
+#   1. iptables OUTPUT block on the MetaQuotes update server so MT5
+#      can't even attempt the download. The liveupdate subprocess
+#      fails fast and exits.
+#   2. pkill every 2 s on `terminal64.exe /update` so any liveupdate
+#      subprocess that already spawned gets killed.
+#   3. rm -rf every 2 s on `liveupdate/` subdirs so MT5 can't reuse
+#      the cached binary even if it tried to.
+#
+# Three layers because MT5 has multiple paths to spawn the liveupdate
+# subprocess and we want to make sure the normal `terminal64.exe
+# /portable /skipupdate` wins the race to keep the WS port / files.
 # Verified manually on 2026-07-23 — see docs/sessions/2026-07-23-
-# v0.4-trading-api-handoff.md Session addendum, "What did NOT
-# verify" → "MT5 stuck in liveupdate".
-RUN mkdir -p /etc/s6-overlay/s6-rc.d/svc-strip-mt5-liveupdate /etc/s6-overlay/s6-rc.d/svc-strip-mt5-liveupdate/dependencies.d /etc/s6-overlay/s6-rc.d/user/contents.d && \
-    printf '#!/usr/bin/with-contenv bash\n\
-# Delete every liveupdate/ subdir under any MT5 profile dir so the\n\
-# terminal never spawns the stuck liveupdate subprocess. See\n\
-# Dockerfile comment above for context.\n\
-set -u\n\
-LOG=/var/log/strip-mt5-liveupdate.log\n\
-log() { printf "[%%s] %%s\\n" "$(date -Iseconds)" "$*" >>"$LOG"; }\n\
-PROFILES_DIR=/config/.wine/drive_c/users/abc/AppData/Roaming/MetaQuotes/Terminal\n\
-if [[ -d "$PROFILES_DIR" ]]; then\n\
-  count=0\n\
-  while IFS= read -r lu; do\n\
-    rm -rf "$lu" && count=$((count + 1)) && log "removed $lu"\n\
-  done < <(find "$PROFILES_DIR" -mindepth 2 -maxdepth 2 -type d -name liveupdate 2>/dev/null)\n\
-  log "done (removed $count liveupdate subdirs)"\n\
-else\n\
-  log "profiles dir missing: $PROFILES_DIR — nothing to strip yet"\n\
-fi\n\
-sleep infinity\n' \
-      > /etc/s6-overlay/s6-rc.d/svc-strip-mt5-liveupdate/run && \
-    chmod +x /etc/s6-overlay/s6-rc.d/svc-strip-mt5-liveupdate/run && \
-    printf 'longrun\n' > /etc/s6-overlay/s6-rc.d/svc-strip-mt5-liveupdate/type && \
-    touch /etc/s6-overlay/s6-rc.d/user/contents.d/svc-strip-mt5-liveupdate
+# v0.4-trading-api-handoff.md Session 2026-07-23, "MT5 stuck in
+# liveupdate". Without this service the v2.11 SlotService.ex5 never
+# starts because the normal `terminal64.exe` is blocked by the
+# liveupdate zombies.
+COPY scripts/suppress-liveupdate.sh /etc/s6-overlay/suppress-liveupdate.sh
+RUN chmod +x /etc/s6-overlay/suppress-liveupdate.sh && \
+    mkdir -p /etc/s6-overlay/s6-rc.d/svc-suppress-liveupdate /etc/s6-overlay/s6-rc.d/svc-suppress-liveupdate/dependencies.d /etc/s6-overlay/s6-rc.d/user/contents.d && \
+    printf '#!/usr/bin/with-contenv bash\nexec /etc/s6-overlay/suppress-liveupdate.sh\n' \
+      > /etc/s6-overlay/s6-rc.d/svc-suppress-liveupdate/run && \
+    chmod +x /etc/s6-overlay/s6-rc.d/svc-suppress-liveupdate/run && \
+    printf 'longrun\n' > /etc/s6-overlay/s6-rc.d/svc-suppress-liveupdate/type && \
+    touch /etc/s6-overlay/s6-rc.d/user/contents.d/svc-suppress-liveupdate
 
 # akroncloud-slot: override the base image's svc-de and svc-kasmvnc run
 # scripts. The akron-mt5-base image does not set DISPLAY, HOME or
