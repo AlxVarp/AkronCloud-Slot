@@ -144,6 +144,14 @@ export class Mt5CommandClient {
       log.info({ host: this.host, port: this.port }, 'mt5 command client connected');
     });
 
+    // Closure flag: tracks whether the 'error' handler ran for THIS
+    // socket. The destroyed-socket 'close' fires after 'error'; clean
+    // peer disconnects fire 'close' without 'error'. The flag lets
+    // 'close' know whether reconnect has already been scheduled, so we
+    // don't double-schedule (which previously caused a busy loop on
+    // fresh deploys where MQL5 wasn't listening yet).
+    let connectFailed = false;
+
     s.once('error', (err) => {
       // debug-level: the slot retries every IDLE_RECONNECT_MS until
       // MQL5 starts listening. At warn this would flood the log
@@ -152,6 +160,7 @@ export class Mt5CommandClient {
       // outage deserves operator attention.
       log.debug({ err: err.message, host: this.host, port: this.port },
         'mt5 command client connect error');
+      connectFailed = true;
       this.failPending(err);
       s.destroy();
       this.sock = null;
@@ -175,18 +184,15 @@ export class Mt5CommandClient {
     s.on('close', () => {
       log.debug('mt5 command client disconnected');
       this.failPending(new Error('MT5 command socket closed'));
-      // Reconnect is owned by the 'error' handler — DON'T schedule here
-      // too. When the connect fails (ECONNREFUSED), the error handler
-      // destroys the socket and schedules a 2s reconnect. The destroyed
-      // socket then fires 'close' asynchronously, and if we also
-      // scheduled here we'd get a stack of overlapping timers causing
-      // a tight CPU-spinning reconnect storm. Only schedule from 'close'
-      // if the 'error' handler did NOT fire (i.e. a clean disconnect
-      // after a successful connection).
-      if (!this.destroyed && (!this.sock || this.sock === s)) {
-        this.sock = null;
-        this.scheduleReconnect();
-      }
+      // If 'error' already ran for this socket, reconnect was
+      // scheduled from there — don't double-schedule (the previous
+      // bug here caused a tight CPU-spinning reconnect storm).
+      // Otherwise this is a clean disconnect and we need to
+      // schedule ourselves.
+      if (connectFailed) return;
+      if (this.destroyed) return;
+      this.sock = null;
+      this.scheduleReconnect();
     });
 
     this.sock = s;
