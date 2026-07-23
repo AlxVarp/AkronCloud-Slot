@@ -367,6 +367,13 @@ RUN touch /etc/s6-overlay/s6-rc.d/user/contents.d/svc-mt5-ocr-bridge
 # argument string, which gets very messy inside Dockerfile RUN. To
 # avoid that we wrap the compile in a small shell script that's
 # copied into the image and called via /bin/sh.
+#
+# xvfb lives in the build stage already (line 16), but the runtime
+# stage FROM akron-mt5-base doesn't have it — install here so the
+# metaeditor headless compile works inside this stage.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends xvfb && \
+    rm -rf /var/lib/apt/lists/*
 COPY ["mql5/SlotService.mq5", "/tmp/SlotService.mq5"]
 COPY scripts/compile-slot-service.sh /tmp/compile-slot-service.sh
 RUN chmod +x /tmp/compile-slot-service.sh && \
