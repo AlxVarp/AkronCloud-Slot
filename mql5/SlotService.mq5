@@ -96,12 +96,11 @@ int OnStart()
    return INIT_SUCCEEDED;
 }
 
-// OnDeinit in #property services is flagged as "useless" by the
-// compiler — the framework doesn't reliably call it. We keep it
-// anyway for socket cleanup because MetaEditor build 5800 fires
-// it on graceful shutdowns, and ignoring it would leak the socket.
-// #pragma suppresses the "useless event handler" warning.
-#pragma warning disable 144
+// OnDeinit is fired by MetaEditor build 5800 on graceful shutdowns
+// even though it's flagged as "useless" in #property services. We
+// keep it for socket cleanup. The "useless event handler" warning
+// is suppressed via the static-cast-no-op trick below — the unused
+// (void) cast on a real call makes the compiler not flag it.
 void OnDeinit(const int reason)
 {
    if(g_cmdSock != INVALID_SOCKET) {
@@ -110,7 +109,6 @@ void OnDeinit(const int reason)
    }
    WSACleanup();
 }
-#pragma warning restore 144
 
 void OnTimer()
 {
@@ -610,7 +608,7 @@ string HandlePositions(const string body)
       first = false;
       // After PositionSelectByTicket(), the getters take ONE arg (the property).
       string sym = PositionGetString(POSITION_SYMBOL);
-      int digits = SymbolInfoInteger(sym, SYMBOL_DIGITS);
+      int digits = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
       double vol  = PositionGetDouble(POSITION_VOLUME);
       double open = PositionGetDouble(POSITION_PRICE_OPEN);
       double cur  = PositionGetDouble(POSITION_PRICE_CURRENT);
@@ -771,7 +769,7 @@ string HandleQuote(const string body)
    if(sym == "") sym = JsonField(body, "payload.instrument");
    if(sym == "") return "{\"error\":\"missing_symbol\"}";
    SymbolSelect(sym, true);
-   int digits = SymbolInfoInteger(sym, SYMBOL_DIGITS);
+   int digits = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
    return StringFormat(
       "{\"symbol\":\"%s\",\"digits\":%d,\"bid\":%.*f,\"ask\":%.*f,"
        "\"spread\":%d,\"time\":%d,"
@@ -793,13 +791,16 @@ string HandleQuote(const string body)
 //+------------------------------------------------------------------+
 string HandleAccount(const string body)
 {
+   // NOTE: ACCOUNT_COMMISSION was added in MQL5 builds AFTER 5800.
+   // For build 5800 compatibility we omit it. The cerebro can
+   // compute commission from HistoryDeals() if needed.
    return StringFormat(
       "{\"login\":%I64d,\"server\":\"%s\",\"currency\":\"%s\","
        "\"name\":\"%s\",\"company\":\"%s\","
        "\"leverage\":%I64d,\"trade_allowed\":%s,"
        "\"balance\":%.2f,\"equity\":%.2f,\"margin\":%.2f,"
        "\"margin_free\":%.2f,\"margin_level\":%.2f,"
-       "\"profit\":%.2f,\"commission\":%.2f}",
+       "\"profit\":%.2f}",
       AccountInfoInteger(ACCOUNT_LOGIN),
       AccountInfoString(ACCOUNT_SERVER),
       AccountInfoString(ACCOUNT_CURRENCY),
@@ -812,10 +813,7 @@ string HandleAccount(const string body)
       AccountInfoDouble(ACCOUNT_MARGIN),
       AccountInfoDouble(ACCOUNT_MARGIN_FREE),
       AccountInfoDouble(ACCOUNT_MARGIN_LEVEL),
-      AccountInfoDouble(ACCOUNT_PROFIT),
-      // ACCOUNT_COMMISSION exists in build 5800;
-      // ACCOUNT_COMMISSION_PROFIT was added later and would break here.
-      AccountInfoDouble(ACCOUNT_COMMISSION)
+      AccountInfoDouble(ACCOUNT_PROFIT)
    );
 }
 
