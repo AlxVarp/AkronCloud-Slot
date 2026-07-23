@@ -31,6 +31,10 @@ export async function internalRoutes(app: FastifyInstance): Promise<void> {
   app.post('/internal/sync', async (req) => {
     const deps = (req.server as unknown as { deps: Deps }).deps;
     const tenantId = deps.cfg.tenantId;
+    deps.log.info(
+      { ip: req.ip, ua: req.headers['user-agent']?.slice(0,40) },
+      '/internal/sync called',
+    );
     const accounts = deps.accounts.list(tenantId);
     const triggered: Array<{
       id: string;

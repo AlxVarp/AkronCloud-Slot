@@ -82,8 +82,10 @@ export async function restRoutes(app: FastifyInstance): Promise<void> {
   // Triggers a fresh login frame to SlotService.mq5 over TCP
   // 127.0.0.1:7778 so the connector picks up any account_status
   // event that happened while the slot was idle.
-  app.post('/v1/sync', async () => {
+  app.post('/v1/sync', async (req) => {
     const tenantId = deps.cfg.tenantId;
+    const trace = `[sync ts=${Date.now()} ip=${req.ip} ua=${req.headers['user-agent']?.slice(0,40)}]`;
+    deps.log.info({ trace }, '/v1/sync called');
     const row = deps.accounts.list(tenantId)[0];
     if (!row) {
       return {
