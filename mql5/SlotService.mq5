@@ -18,7 +18,9 @@
 //      "result":{...}|"error":"..."}
 //
 //   host -> MQL5 (frames):
-//     {"type":"command","id":"<uuid>","action":"open"|"close"|"cancel"|"sltp",
+//     {"type":"command","id":"<uuid>","action":"open"|"close"|"cancel"|"sltp"
+//       |"modify_position"|"symbols"|"symbol"|"positions"|"orders"
+//       |"history"|"quote"|"account",
 //      "payload":{...}}
 //
 // Requires `AllowDllImport=1` in MQL5/Config/terminal.ini (the
@@ -285,10 +287,20 @@ void ProcessCommandFrame(string frame)
    string action = JsonField(frame, "action");
    bool   ok     = false;
    string result = "{\"error\":\"unknown_action\"}";
+   // Trading actions
    if(action == "open")   { ok = true; result = HandleOpen(frame); }
    else if(action == "close")  { ok = true; result = HandleClose(frame); }
    else if(action == "cancel") { ok = true; result = HandleCancel(frame); }
    else if(action == "sltp")   { ok = true; result = HandleSltp(frame); }
+   else if(action == "modify_position") { ok = true; result = HandleModifyPosition(frame); }
+   // Query actions (read-only)
+   else if(action == "symbols")    { ok = true; result = HandleSymbols(frame); }
+   else if(action == "symbol")     { ok = true; result = HandleSymbol(frame); }
+   else if(action == "positions")  { ok = true; result = HandlePositions(frame); }
+   else if(action == "orders")     { ok = true; result = HandleOrders(frame); }
+   else if(action == "history")    { ok = true; result = HandleHistory(frame); }
+   else if(action == "quote")      { ok = true; result = HandleQuote(frame); }
+   else if(action == "account")    { ok = true; result = HandleAccount(frame); }
    SendFrame("{\"type\":\"response\",\"id\":\"" + id
              + "\",\"ok\":" + (ok ? "true" : "false")
              + ",\"result\":" + result + "}");
@@ -470,6 +482,330 @@ string HandleSltp(const string body)
    bool ok = OrderSend(req, res);
    return ok ? ("{\"modified\":\"" + IntegerToString((long)ticket) + "\"}")
              : ("{\"error\":\"" + JsonEscape(res.comment) + "\"}");
+}
+
+//+------------------------------------------------------------------+
+//| v2 — Modify SL/TP on an open position (vs Sltp which is for     |
+//|      pending orders). Uses TRADE_ACTION_SLTP with req.position.   |
+//+------------------------------------------------------------------+
+string HandleModifyPosition(const string body)
+{
+   ulong ticket = (ulong)StringToInteger(JsonField(body, "payload.position_id"));
+   if(ticket == 0) ticket = (ulong)StringToInteger(JsonField(body, "payload.ticket"));
+   if(ticket == 0) return "{\"error\":\"missing_ticket\"}";
+   if(!PositionSelectByTicket(ticket)) return "{\"error\":\"position_not_found\"}";
+   double sl = StringToDouble(JsonField(body, "payload.sl"));
+   double tp = StringToDouble(JsonField(body, "payload.tp"));
+   MqlTradeRequest req;
+   ZeroMemory(req);
+   req.action   = TRADE_ACTION_SLTP;
+   req.position = ticket;
+   req.symbol   = PositionGetSymbol(ticket);
+   req.sl       = sl;
+   req.tp       = tp;
+   MqlTradeResult res;
+   ZeroMemory(res);
+   bool ok = OrderSend(req, res);
+   return ok ? ("{\"modified\":\"" + IntegerToString((long)ticket)
+                   + "\",\"sl\":" + DoubleToString(sl, 5)
+                   + ",\"tp\":" + DoubleToString(tp, 5) + "}")
+             : ("{\"error\":\"" + JsonEscape(res.comment)
+                + "\",\"retcode\":" + IntegerToString(res.retcode) + "}");
+}
+
+//+------------------------------------------------------------------+
+//| v2 — Query: list symbols. Optional payload.pattern substring filter|
+//+------------------------------------------------------------------+
+string HandleSymbols(const string body)
+{
+   string filter = JsonField(body, "payload.pattern");
+   bool   select_mw_only = (JsonField(body, "payload.market_watch_only") == "true");
+   int total = SymbolsTotal(select_mw_only);
+   string out = "[";
+   bool first = true;
+   for(int i = 0; i < total; i++)
+   {
+      string name = SymbolName(i, select_mw_only);
+      if(name == "") continue;
+      if(filter != "" && StringFind(name, filter) < 0) continue;
+      if(!first) out += ",";
+      first = false;
+      out += "\"" + JsonEscape(name) + "\"";
+   }
+   out += "]";
+   return "{\"count\":" + IntegerToString(total)
+        + ",\"symbols\":" + out + "}";
+}
+
+//+------------------------------------------------------------------+
+//| v2 — Query: detail for a single symbol (info + quote snapshot)   |
+//+------------------------------------------------------------------+
+string HandleSymbol(const string body)
+{
+   string sym = JsonField(body, "payload.symbol");
+   if(sym == "") sym = JsonField(body, "payload.instrument");
+   if(sym == "") return "{\"error\":\"missing_symbol\"}";
+   if(!SymbolSelect(sym, true)) return "{\"error\":\"symbol_select_failed\"}";
+   SymbolSelect(sym, true);
+
+   return StringFormat(
+      "{\"symbol\":\"%s\",\"description\":\"%s\","
+       "\"path\":\"%s\",\"currency\":\"%s\","
+       "\"digits\":%d,\"point\":%.10f,\"trade_contract_size\":%.2f,"
+       "\"volume_min\":%.2f,\"volume_max\":%.2f,\"volume_step\":%.2f,"
+       "\"swap_long\":%.5f,\"swap_short\":%.5f,"
+       "\"margin_initial\":%.4f,\"margin_maintenance\":%.4f,"
+       "\"trade_mode\":%d,\"trade_allowed\":%s,"
+       "\"bid\":%.*f,\"ask\":%.*f,\"spread\":%d,"
+       "\"session_deals\":%I64d,\"session_buy_orders\":%I64d,"
+       "\"session_sell_orders\":%I64d,\"volume\":%I64d}",
+      sym,
+      SymbolInfoString(sym, SYMBOL_DESCRIPTION),
+      SymbolInfoString(sym, SYMBOL_PATH),
+      SymbolInfoString(sym, SYMBOL_CURRENCY_BASE),
+      SymbolInfoInteger(sym, SYMBOL_DIGITS),
+      SymbolInfoDouble(sym, SYMBOL_POINT),
+      SymbolInfoDouble(sym, SYMBOL_TRADE_CONTRACT_SIZE),
+      SymbolInfoDouble(sym, SYMBOL_VOLUME_MIN),
+      SymbolInfoDouble(sym, SYMBOL_VOLUME_MAX),
+      SymbolInfoDouble(sym, SYMBOL_VOLUME_STEP),
+      SymbolInfoDouble(sym, SYMBOL_SWAP_LONG),
+      SymbolInfoDouble(sym, SYMBOL_SWAP_SHORT),
+      SymbolInfoDouble(sym, SYMBOL_MARGIN_INITIAL),
+      SymbolInfoDouble(sym, SYMBOL_MARGIN_MAINTENANCE),
+      SymbolInfoInteger(sym, SYMBOL_TRADE_MODE),
+      (SymbolInfoInteger(sym, SYMBOL_TRADE_MODE) == SYMBOL_TRADE_MODE_DISABLED ? "false" : "true"),
+      // %.*f takes precision (digits) BEFORE the value
+      SymbolInfoInteger(sym, SYMBOL_DIGITS), SymbolInfoDouble(sym, SYMBOL_BID),
+      SymbolInfoInteger(sym, SYMBOL_DIGITS), SymbolInfoDouble(sym, SYMBOL_ASK),
+      SymbolInfoInteger(sym, SYMBOL_SPREAD),
+      SymbolInfoInteger(sym, SYMBOL_SESSION_DEALS),
+      SymbolInfoInteger(sym, SYMBOL_SESSION_BUY_ORDERS),
+      SymbolInfoInteger(sym, SYMBOL_SESSION_SELL_ORDERS),
+      SymbolInfoInteger(sym, SYMBOL_VOLUME)
+   );
+}
+
+//+------------------------------------------------------------------+
+//| v2 — Query: open positions                                         |
+//+------------------------------------------------------------------+
+string HandlePositions(const string body)
+{
+   int total = PositionsTotal();
+   string out = "[";
+   bool first = true;
+   for(int i = 0; i < total; i++)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0) continue;
+      if(!PositionSelectByTicket(ticket)) continue;
+      if(!first) out += ",";
+      first = false;
+      double vol  = PositionGetDouble(ticket, POSITION_VOLUME);
+      double open = PositionGetDouble(ticket, POSITION_PRICE_OPEN);
+      double cur  = PositionGetDouble(ticket, POSITION_PRICE_CURRENT);
+      double sl   = PositionGetDouble(ticket, POSITION_SL);
+      double tp   = PositionGetDouble(ticket, POSITION_TP);
+      double pnl  = PositionGetDouble(ticket, POSITION_PROFIT);
+      long   type = PositionGetInteger(ticket, POSITION_TYPE);
+      long   magic = PositionGetInteger(ticket, POSITION_MAGIC);
+      string comment = PositionGetString(ticket, POSITION_COMMENT);
+      datetime time = (datetime)PositionGetInteger(ticket, POSITION_TIME);
+      out += StringFormat(
+         "{\"ticket\":%I64d,\"symbol\":\"%s\",\"magic\":%I64d,"
+          "\"side\":\"%s\",\"volume\":%.2f,"
+          "\"price_open\":%.*f,\"price_current\":%.*f,"
+          "\"sl\":%.5f,\"tp\":%.5f,"
+          "\"profit\":%.2f,\"swap\":%.2f,"
+          "\"comment\":\"%s\","
+          "\"time\":%d}",
+         ticket,
+         PositionGetString(ticket, POSITION_SYMBOL),
+         magic,
+         (type == POSITION_TYPE_BUY ? "buy" : "sell"),
+         vol,
+         // %.*f: precision (digits) BEFORE the value
+         SymbolInfoInteger(PositionGetString(ticket, POSITION_SYMBOL), SYMBOL_DIGITS), open,
+         SymbolInfoInteger(PositionGetString(ticket, POSITION_SYMBOL), SYMBOL_DIGITS), cur,
+         sl, tp, pnl,
+         PositionGetDouble(ticket, POSITION_SWAP),
+         JsonEscape(comment),
+         time
+      );
+   }
+   out += "]";
+   return "{\"count\":" + IntegerToString(total)
+        + ",\"positions\":" + out + "}";
+}
+
+//+------------------------------------------------------------------+
+//| v2 — Query: pending orders                                         |
+//+------------------------------------------------------------------+
+string HandleOrders(const string body)
+{
+   int total = OrdersTotal();
+   string out = "[";
+   bool first = true;
+   for(int i = 0; i < total; i++)
+   {
+      ulong ticket = OrderGetTicket(i);
+      if(ticket == 0) continue;
+      if(!OrderSelect(ticket)) continue;
+      if(!first) out += ",";
+      first = false;
+      long   type   = (long)OrderGetInteger(ticket, ORDER_TYPE);
+      double vol    = OrderGetDouble(ticket, ORDER_VOLUME_INITIAL);
+      double curVol = OrderGetDouble(ticket, ORDER_VOLUME_CURRENT);
+      double price  = OrderGetDouble(ticket, ORDER_PRICE_OPEN);
+      double sl     = OrderGetDouble(ticket, ORDER_SL);
+      double tp     = OrderGetDouble(ticket, ORDER_TP);
+      double pnl    = OrderGetDouble(ticket, ORDER_PROFIT);
+      long   state  = (long)OrderGetInteger(ticket, ORDER_STATE);
+      long   magic  = OrderGetInteger(ticket, ORDER_MAGIC);
+      string sym    = OrderGetString(ticket, ORDER_SYMBOL);
+      string comment = OrderGetString(ticket, ORDER_COMMENT);
+      datetime setup = (datetime)OrderGetInteger(ticket, ORDER_TIME_SETUP);
+      string type_str;
+      if(type == ORDER_TYPE_BUY)        type_str = "buy_market";
+      else if(type == ORDER_TYPE_SELL)  type_str = "sell_market";
+      else if(type == ORDER_TYPE_BUY_LIMIT)  type_str = "buy_limit";
+      else if(type == ORDER_TYPE_SELL_LIMIT) type_str = "sell_limit";
+      else if(type == ORDER_TYPE_BUY_STOP)   type_str = "buy_stop";
+      else if(type == ORDER_TYPE_SELL_STOP)  type_str = "sell_stop";
+      else type_str = "other";
+      out += StringFormat(
+         "{\"ticket\":%I64d,\"symbol\":\"%s\",\"magic\":%I64d,"
+          "\"type\":\"%s\",\"state\":%d,"
+          "\"volume_initial\":%.2f,\"volume_current\":%.2f,"
+          "\"price\":%.5f,\"sl\":%.5f,\"tp\":%.5f,"
+          "\"profit\":%.2f,\"comment\":\"%s\",\"setup_time\":%d}",
+         ticket, sym, magic, type_str, state,
+         vol, curVol, price, sl, tp, pnl,
+         JsonEscape(comment), setup
+      );
+   }
+   out += "]";
+   return "{\"count\":" + IntegerToString(total)
+        + ",\"orders\":" + out + "}";
+}
+
+//+------------------------------------------------------------------+
+//| v2 — Query: history deals in [from, to] (unix seconds, default   |
+//|      last 24h). Returns each deal with order, symbol, side, vol,  |
+//|      price, profit, commission, swap, time.                       |
+//+------------------------------------------------------------------+
+string HandleHistory(const string body)
+{
+   datetime from = (datetime)StringToInteger(JsonField(body, "payload.from"));
+   datetime to   = (datetime)StringToInteger(JsonField(body, "payload.to"));
+   int    limit = (int)StringToInteger(JsonField(body, "payload.limit"));
+   if(from == 0) from = TimeCurrent() - 86400;
+   if(to   == 0) to   = TimeCurrent();
+   if(limit <= 0 || limit > 5000) limit = 500;
+
+   HistorySelect(from, to);
+   int total = HistoryDealsTotal();
+   string out = "[";
+   bool first = true;
+   int emitted = 0;
+   // HistoryDealsTotal returns newest first; emit newest first too.
+   for(int i = 0; i < total && emitted < limit; i++)
+   {
+      ulong ticket = HistoryDealGetTicket(i);
+      if(ticket == 0) continue;
+      long   entry = (long)HistoryDealGetInteger(ticket, DEAL_ENTRY);
+      // Skip balance/credit deals — only trade deals
+      if(entry == DEAL_ENTRY_OUT) continue;
+      if(!first) out += ",";
+      first = false;
+      emitted++;
+      long   type  = (long)HistoryDealGetInteger(ticket, DEAL_TYPE);
+      long   dir   = (long)HistoryDealGetInteger(ticket, DEAL_DIRECTION);
+      long   order = (long)HistoryDealGetInteger(ticket, DEAL_ORDER);
+      long   posId = (long)HistoryDealGetInteger(ticket, DEAL_POSITION_ID);
+      datetime t = (datetime)HistoryDealGetInteger(ticket, DEAL_TIME);
+      string entry_str = "in";
+      if(entry == DEAL_ENTRY_OUT)      entry_str = "out";
+      else if(entry == DEAL_ENTRY_INOUT) entry_str = "inout";
+      string type_str = "buy";
+      if(type == DEAL_TYPE_SELL) type_str = "sell";
+      else if(type == DEAL_TYPE_BALANCE) type_str = "balance";
+      out += StringFormat(
+         "{\"ticket\":%I64d,\"order\":%I64d,\"position_id\":%I64d,"
+          "\"symbol\":\"%s\","
+          "\"entry\":\"%s\",\"type\":\"%s\","
+          "\"volume\":%.2f,\"price\":%.5f,"
+          "\"profit\":%.2f,\"commission\":%.2f,\"swap\":%.2f,"
+          "\"time\":%d}",
+         ticket, order, posId,
+         HistoryDealGetString(ticket, DEAL_SYMBOL),
+         entry_str, type_str,
+         HistoryDealGetDouble(ticket, DEAL_VOLUME),
+         HistoryDealGetDouble(ticket, DEAL_PRICE),
+         HistoryDealGetDouble(ticket, DEAL_PROFIT),
+         HistoryDealGetDouble(ticket, DEAL_COMMISSION),
+         HistoryDealGetDouble(ticket, DEAL_SWAP),
+         t
+      );
+   }
+   out += "]";
+   return "{\"count\":" + IntegerToString(emitted)
+        + ",\"history\":" + out + "}";
+}
+
+//+------------------------------------------------------------------+
+//| v2 — Query: live quote for a single symbol                        |
+//+------------------------------------------------------------------+
+string HandleQuote(const string body)
+{
+   string sym = JsonField(body, "payload.symbol");
+   if(sym == "") sym = JsonField(body, "payload.instrument");
+   if(sym == "") return "{\"error\":\"missing_symbol\"}";
+   SymbolSelect(sym, true);
+   int digits = SymbolInfoInteger(sym, SYMBOL_DIGITS);
+   return StringFormat(
+      "{\"symbol\":\"%s\",\"digits\":%d,\"bid\":%.*f,\"ask\":%.*f,"
+       "\"spread\":%d,\"time\":%d,"
+       "\"volume\":%I64d,\"high\":%.*f,\"low\":%.*f}",
+      sym, digits,
+      // %.*f: precision (digits) BEFORE the value
+      digits, SymbolInfoDouble(sym, SYMBOL_BID),
+      digits, SymbolInfoDouble(sym, SYMBOL_ASK),
+      SymbolInfoInteger(sym, SYMBOL_SPREAD),
+      TimeCurrent(),
+      SymbolInfoInteger(sym, SYMBOL_VOLUME),
+      digits, SymbolInfoDouble(sym, SYMBOL_ASK),
+      digits, SymbolInfoDouble(sym, SYMBOL_BID)
+   );
+}
+
+//+------------------------------------------------------------------+
+//| v2 — Query: account info (leverage, currency, margin, etc.)     |
+//+------------------------------------------------------------------+
+string HandleAccount(const string body)
+{
+   return StringFormat(
+      "{\"login\":%I64d,\"server\":\"%s\",\"currency\":\"%s\","
+       "\"name\":\"%s\",\"company\":\"%s\","
+       "\"leverage\":%I64d,\"trade_allowed\":%s,"
+       "\"balance\":%.2f,\"equity\":%.2f,\"margin\":%.2f,"
+       "\"margin_free\":%.2f,\"margin_level\":%.2f,"
+       "\"profit\":%.2f,\"currency_profit\":%.2f}",
+      AccountInfoInteger(ACCOUNT_LOGIN),
+      AccountInfoString(ACCOUNT_SERVER),
+      AccountInfoString(ACCOUNT_CURRENCY),
+      AccountInfoString(ACCOUNT_NAME),
+      AccountInfoString(ACCOUNT_COMPANY),
+      AccountInfoInteger(ACCOUNT_LEVERAGE),
+      (TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) ? "true" : "false"),
+      AccountInfoDouble(ACCOUNT_BALANCE),
+      AccountInfoDouble(ACCOUNT_EQUITY),
+      AccountInfoDouble(ACCOUNT_MARGIN),
+      AccountInfoDouble(ACCOUNT_MARGIN_FREE),
+      AccountInfoDouble(ACCOUNT_MARGIN_LEVEL),
+      AccountInfoDouble(ACCOUNT_PROFIT),
+      AccountInfoDouble(ACCOUNT_COMMISSION_PROFIT)
+   );
 }
 
 string JsonField(const string body, const string path)
