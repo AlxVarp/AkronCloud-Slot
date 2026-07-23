@@ -33,7 +33,7 @@ import { log } from '../log.js';
  */
 
 const COMMAND_HOST = process.env.SLOT_MT5_CMD_HOST ?? '127.0.0.1';
-const COMMAND_PORT = Number(process.env.SLOT_MT5_CMD_PORT ?? 7779);
+const COMMAND_PORT = Number(process.env.SLOT_MT5_CMD_PORT ?? 7780);
 const CONNECT_TIMEOUT_MS = 3_000;
 const IDLE_RECONNECT_MS = 2_000;
 

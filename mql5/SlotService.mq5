@@ -82,7 +82,7 @@ input string  DefaultSymbol       = "EURUSD";
 input int     PollSeconds         = 1;
 input string  CmdSocketHost       = "127.0.0.1";
 input int     CmdSocketPort       = 7778;
-input int     CmdWebSocketPort    = 7779;
+input int     CmdWebSocketPort    = 7780;
 input int     StartupMarkerWaitMs = 3000;
 
 datetime g_lastPollTime       = 0;
@@ -117,12 +117,33 @@ int OnStart()
    ConnectToSlot();
    SendStartupEvent();
 
-   // Commands come in over a new TCP server socket on port 7779 (v2.11).
+   // Commands come in over a new TCP server socket on port 7780 (v2.11).
    // The slot opens a TCP client to us, sends {"type":"command",...}
    // frames, we process and reply with {"type":"response",...}.
    // This decouples command dispatch from the events TCP socket so
    // the Python account-publisher no longer competes with us for it.
-   StartCommandServer();
+   //
+   // Retry: bind() can transiently fail during MT5 boot when the
+   // liveupdate subprocess is also racing for ports. We retry every
+   // 500ms for up to 5s before giving up. The watchdog's layer 2
+   // (pkill on terminal64.exe /update) keeps the liveupdate from
+   // holding the port long, so this should succeed on attempt 2-5.
+   {
+      int cmd_bound = 0;
+      for(int attempt = 0; attempt < 10 && cmd_bound == 0; attempt++) {
+         StartCommandServer();
+         if(g_cmdListenSock != INVALID_SOCKET) {
+            cmd_bound = 1;
+            PrintFormat("SlotService: command server bound after %d attempts", attempt + 1);
+         } else {
+            PrintFormat("SlotService: command server not bound on attempt %d, retrying in 500ms", attempt + 1);
+            Sleep(500);
+         }
+      }
+      if(!cmd_bound) {
+         Print("SlotService: command server FAILED to bind after retries — broker dispatch will not work");
+      }
+   }
 
    g_lastPollTime = TimeCurrent();
    EventSetMillisecondTimer(MathMax(50, PollSeconds * 1000));

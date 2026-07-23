@@ -41,18 +41,27 @@ log() { printf "[%s] %s\n" "$(date -Iseconds)" "$*" >>"$LOG"; }
 
 # --- One-shot bootstrap ---
 
-# Layer 1: block the MetaQuotes update server. We try the domain
-# string match first (more precise); fall back to broad port 443
-# block if iptables string match isn't supported (some kernels).
+# Layer 1: block the MetaQuotes update server. Three attempts:
+#   1. Domain string match (precise; needs `-m string` module)
+#   2. Owner match on the abc user (works without -m string; kills
+#      MT5's outbound HTTPS entirely — the terminal doesn't need it)
+#   3. Plain REJECT (no -m required; returns ICMP-unreachable which
+#      causes liveupdate to fail-fast and fall through to normal boot)
+# We try them in order; first success wins. iptables inside Docker
+# sometimes refuses rules depending on the network capabilities of
+# the container, so multiple fallbacks are worth it.
 if command -v iptables >/dev/null 2>&1; then
     if iptables -I OUTPUT -p tcp --dport 443 \
         -m string --string 'downloads.metaquotes-net.com' \
         --algo kmp -j DROP 2>/dev/null; then
-        log "blocked downloads.metaquotes-net.com:443 (iptables string match)"
-    elif iptables -I OUTPUT -p tcp --dport 443 -j DROP 2>/dev/null; then
-        log "blocked ALL outbound TCP 443 (broad iptables rule — MetaQuotes liveupdate was the only HTTPS dependency we observed)"
+        log "layer 1: blocked downloads.metaquotes-net.com:443 (iptables string)"
+    elif iptables -I OUTPUT -p tcp --dport 443 \
+        -m owner --uid-owner abc -j REJECT 2>/dev/null; then
+        log "layer 1: blocked ALL outbound 443 from user abc (iptables owner)"
+    elif iptables -I OUTPUT -p tcp --dport 443 -j REJECT 2>/dev/null; then
+        log "layer 1: blocked ALL outbound TCP 443 (broad REJECT — MetaQuotes liveupdate was the only HTTPS dependency we observed)"
     else
-        log "WARN: iptables present but rule add failed — relying on layers 2 + 3 only"
+        log "WARN: iptables rule add failed — relying on layers 2 + 3 only"
     fi
 else
     log "WARN: iptables not found — relying on layers 2 + 3 only"

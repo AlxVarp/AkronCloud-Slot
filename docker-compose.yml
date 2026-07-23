@@ -27,7 +27,7 @@ services:
       # src/web/mt5-ws-proxy.ts -> ws://127.0.0.1:3000/websockify.
       - "127.0.0.1:3000:3000" # KasmVNC desktop - SSH tunnel ONLY, NOT public
       - "127.0.0.1:7778:7778"  # MT5 ↔ slot TCP events socket (SlotService + Python publisher)
-      - "127.0.0.1:7779:7779"  # MT5 ↔ slot TCP commands socket (v2.11 — slot opens outbound to MQL5)
+      - "127.0.0.1:7780:7780"  # MT5 ↔ slot TCP commands socket (v2.11 — slot opens outbound to MQL5)
     volumes:
       - slot-state:/var/lib/akron-slot
     healthcheck:
