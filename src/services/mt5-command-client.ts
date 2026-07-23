@@ -145,7 +145,12 @@ export class Mt5CommandClient {
     });
 
     s.once('error', (err) => {
-      log.warn({ err: err.message, host: this.host, port: this.port },
+      // debug-level: the slot retries every IDLE_RECONNECT_MS until
+      // MQL5 starts listening. At warn this would flood the log
+      // (30 entries/minute) and starve the HTTP server. The first
+      // ECONNREFUSED in a fresh deploy is normal — only a sustained
+      // outage deserves operator attention.
+      log.debug({ err: err.message, host: this.host, port: this.port },
         'mt5 command client connect error');
       this.failPending(err);
       s.destroy();
@@ -168,7 +173,7 @@ export class Mt5CommandClient {
     });
 
     s.on('close', () => {
-      log.warn('mt5 command client disconnected');
+      log.debug('mt5 command client disconnected');
       this.failPending(new Error('MT5 command socket closed'));
       this.sock = null;
       if (!this.destroyed) this.scheduleReconnect();
