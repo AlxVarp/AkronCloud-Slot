@@ -334,7 +334,7 @@ RUN chmod +x /etc/s6-overlay/s6-rc.d/svc-mt5-ocr-bridge/run
 RUN printf 'longrun\n' > /etc/s6-overlay/s6-rc.d/svc-mt5-ocr-bridge/type
 RUN touch /etc/s6-overlay/s6-rc.d/user/contents.d/svc-mt5-ocr-bridge
 
-# SlotService.ex5 ships pre-compiled in the repo (mql5/SlotService.ex5).
+# SlotService.mq5 → .ex5 — compiled at build time from the .mq5 source.
 # Service mode (commits a606493 + 0499462): #property service,
 # registered in services.ini + Wine registry below. MT5 launches
 # it at terminal startup, before any chart is loaded — no chart-
@@ -353,9 +353,26 @@ RUN touch /etc/s6-overlay/s6-rc.d/user/contents.d/svc-mt5-ocr-bridge
 # ws2_32.dll via #import. See docs/plans/PHASE_C_RTA_B1_TCP_SOCKET.md
 # for the wire protocol.
 #
-# Compiled inside ghcr.io/alxvarp/akron-mt5-base:mt5-preinstalled
-# with MetaEditor64.exe via Wine (see mql5/SlotService.mq5 for the
-# source).
+# v2.11: adds a SECOND listening socket on port 7779 for command
+# dispatch (slot opens outbound TCP). See the mql5/SlotService.mq5
+# header comment for the wire split. Same compile step produces
+# the v2.11 .ex5.
+#
+# Compile step: copy the .mq5 source into the MQL5 Services dir,
+# then run metaeditor64.exe via xvfb-run wine to produce .ex5. The
+# compile writes .ex5 next to .mq5; we then COPY that artifact.
+COPY ["mql5/SlotService.mq5", "/tmp/SlotService.mq5"]
+RUN mkdir -p "/config/.wine/drive_c/Program Files/MetaTrader 5/MQL5/Services" && \
+    cp /tmp/SlotService.mq5 "/config/.wine/drive_c/Program Files/MetaTrader 5/MQL5/Services/SlotService.mq5" && \
+    chown abc:abc "/config/.wine/drive_c/Program Files/MetaTrader 5/MQL5/Services/SlotService.mq5" && \
+    su abc -c "export DISPLAY=:99 WINEPREFIX=/config/.wine && \
+                 xvfb-run -a --server-args='-screen 0 1024x768x24' wine \
+                   /config/.wine/drive_c/users/abc/MetaTrader\\ 5/MetaEditor64.exe /portable \
+                   /compile:\"Z:\\\\config\\\\.wine\\\\drive_c\\\\Program Files\\\\MetaTrader 5\\\\MQL5\\\\Services\\\\SlotService.mq5\" \
+                   /inc:\"Z:\\\\config\\\\.wine\\\\drive_c\\\\Program Files\\\\MetaTrader 5\\\\MQL5\" \
+                 2>&1 | tail -10" && \
+    ls -la "/config/.wine/drive_c/Program Files/MetaTrader 5/MQL5/Services/" && \
+    chown abc:abc "/config/.wine/drive_c/Program Files/MetaTrader 5/MQL5/Services/SlotService.ex5"
 COPY ["mql5/SlotService.ex5", "/config/.wine/drive_c/Program Files/MetaTrader 5/MQL5/Services/SlotService.ex5"]
 RUN chown abc:abc \
    "/config/.wine/drive_c/Program Files/MetaTrader 5/MQL5/Services/SlotService.ex5"
