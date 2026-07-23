@@ -5,15 +5,22 @@ import { log } from '../log.js';
 import type {
   AccountState,
   AccountEvent,
+  AccountInfo,
   BrokerConnector,
   BrokerCreds,
+  BrokerDeal,
   BrokerEvent,
+  BrokerOrder,
+  BrokerPosition,
   Fill,
+  HistoryQueryOpts,
   NewOrder,
   OrderResult,
   Position,
   Quote,
+  SymbolDetail,
   SymbolSpec,
+  SymbolsQueryOpts,
   OrderStatus,
 } from './base.js';
 import type { AccountRow } from '../db/index.js';
@@ -206,6 +213,61 @@ export class Mt5Connector implements BrokerConnector {
 
   // ────────────────────── queries ──────────────────────
 
+  /**
+   * Dispatch a query command to MT5 and return the parsed JSON result.
+   *
+   * The MQL5 handler always sends `result: <JSON STRING>`, so on the
+   * Node side `r.result` arrives as a string. We parse it here and
+   * surface the typed object to callers. Errors bubble up unchanged
+   * so handlers can convert them to HTTP 502 / Problem+JSON.
+   */
+  private async mt5Query<T = Record<string, unknown>>(
+    action: string,
+    payload: Record<string, unknown> = {},
+  ): Promise<T> {
+    const r = await this.tcp.dispatchCommand({
+      type: 'command',
+      action,
+      payload,
+      id: randomUUID(),
+    });
+    if (!r.ok) throw new Error(r.error ?? 'mt5_error');
+    return this.parseResultJson<T>(r.result, action);
+  }
+
+  /**
+   * Normalise a TCP `r.result` payload into the parsed JSON object.
+   * MQL5 sends `result: <JSON STRING>`; the wire JSON parser hands
+   * us back the literal string. Some pre-v0.4 paths in the codebase
+   * (openTrade, closeTrade) hand the parsed-once dispatch result
+   * back to their callers — for those, `r.result` may already be an
+   * object if the broker returned an error envelope.
+   */
+  private parseResultJson<T>(
+    result: unknown,
+    action?: string,
+  ): T {
+    if (typeof result === 'string') {
+      try {
+        return JSON.parse(result) as T;
+      } catch (e) {
+        log.warn(
+          {
+            action,
+            err: (e as Error).message,
+            sample: result.slice(0, 200),
+          },
+          'mt5: failed to parse result JSON string',
+        );
+        return {} as T;
+      }
+    }
+    if (result && typeof result === 'object') {
+      return result as T;
+    }
+    return {} as T;
+  }
+
   async state(accountRef: string): Promise<AccountState> {
     const rec = this.accounts.get(accountRef);
     if (!rec) {
@@ -224,29 +286,45 @@ export class Mt5Connector implements BrokerConnector {
     };
   }
 
-  async symbols(_accountRef: string): Promise<SymbolSpec[]> {
-    // v0: hardcoded EURUSD. Phase C-real: dispatchCommand({action:"symbols"})
-    // returning SymbolInfo* results from MQL5. Deferred — same as Phase B.
-    return [
-      {
-        symbol: 'EURUSD',
-        digits: 5,
-        min_lot: 0.01,
-        max_lot: 100,
-        lot_step: 0.01,
-        currency: 'USD',
-      },
-    ];
+  async symbols(
+    _accountRef: string,
+    opts?: SymbolsQueryOpts,
+  ): Promise<SymbolSpec[]> {
+    const result = await this.mt5Query<{
+      count?: number;
+      symbols?: Array<{
+        symbol: string;
+        digits?: number;
+        min_lot?: number;
+        max_lot?: number;
+        lot_step?: number;
+        currency?: string;
+        [k: string]: unknown;
+      }>;
+    }>('symbols', {
+      pattern: opts?.pattern ?? '',
+      market_watch_only: opts?.marketWatchOnly ?? false,
+    });
+    const syms = result.symbols ?? [];
+    return syms.map((s) => ({
+      symbol: s.symbol,
+      digits: s.digits ?? 5,
+      min_lot: s.min_lot ?? 0.01,
+      max_lot: s.max_lot ?? 100,
+      lot_step: s.lot_step ?? 0.01,
+      currency: s.currency ?? 'USD',
+    }));
   }
 
   async quote(_accountRef: string, symbol: string): Promise<Quote> {
-    // v0: synthetic bid/ask. Phase C-real: dispatchCommand({action:"quote"})
-    // returning SymbolInfoDouble(MODE_BID/ASK) from MQL5. Deferred.
-    return {
+    const result = await this.mt5Query<Quote & { spread?: number }>('quote', {
       symbol,
-      bid: 1.0832,
-      ask: 1.0834,
-      ts: Date.now(),
+    });
+    return {
+      symbol: result.symbol ?? symbol,
+      bid: result.bid ?? 0,
+      ask: result.ask ?? 0,
+      ts: result.ts ?? Date.now(),
     };
   }
 
@@ -262,6 +340,23 @@ export class Mt5Connector implements BrokerConnector {
       qty: p.qty,
       avg_price: p.avg_price,
     }));
+  }
+
+  /**
+   * MT5-truth open positions — dispatches SlotService.action='positions'
+   * to MQL5 and returns the raw broker view (ticket, profit, swap,
+   * magic, comment, etc.). Distinct from `positions()` which is
+   * ledger-derived and only used by /v1/state.
+   */
+  async getPositions(accountRef: string): Promise<BrokerPosition[]> {
+    const rec = this.accounts.get(accountRef);
+    const payload: Record<string, unknown> = {};
+    if (rec) payload.account_id = rec.broker_login;
+    const result = await this.mt5Query<{
+      count?: number;
+      positions?: BrokerPosition[];
+    }>('positions', payload);
+    return result.positions ?? [];
   }
 
   async openTrade(
@@ -292,10 +387,12 @@ export class Mt5Connector implements BrokerConnector {
       if (!r.ok) {
         return { ok: false, reason: r.error ?? 'unknown_error' };
       }
-      // The MQL5 handler returns {order_id, broker_order_id} or
-      // {error, retcode}. Both come back as the result object.
-      const result = r.result as { order_id?: string; broker_order_id?: string }
-        | undefined;
+      // The MQL5 handler sends `result: <JSON STRING>` containing
+      // {order_id, broker_order_id} or {error, retcode}. Parse it.
+      const result = this.parseResultJson<{
+        order_id?: string;
+        broker_order_id?: string;
+      }>(r.result);
       const brokerOrderId = result?.broker_order_id
         ?? result?.order_id
         ?? `pending-${clientOrderId}`;
@@ -343,8 +440,10 @@ export class Mt5Connector implements BrokerConnector {
       if (!r.ok) {
         return { ok: false, reason: r.error ?? 'unknown_error' };
       }
-      const result = r.result as { closed_ticket?: string; broker_order_id?: string }
-        | undefined;
+      const result = this.parseResultJson<{
+        closed_ticket?: string;
+        broker_order_id?: string;
+      }>(r.result);
       const brokerOrderId = result?.broker_order_id
         ?? result?.closed_ticket
         ?? `pending-${clientOrderId}`;
@@ -365,6 +464,125 @@ export class Mt5Connector implements BrokerConnector {
         ok: false,
         reason: `TCP dispatch failed: ${(e as Error).message}`,
       };
+    }
+  }
+
+  // ────────────────────── v0.4 query/manage ──────────────────────
+
+  async getAccount(accountRef: string): Promise<AccountInfo> {
+    const rec = this.accounts.get(accountRef);
+    if (!rec) {
+      // The slot doesn't know about this account. Don't waste a TCP
+      // round-trip; return a minimal shell so the caller can see why.
+      return { login: accountRef };
+    }
+    const result = await this.mt5Query<AccountInfo>('account', {
+      account_id: rec.broker_login,
+    });
+    return result;
+  }
+
+  async getSymbol(
+    _accountRef: string,
+    symbol: string,
+  ): Promise<SymbolDetail> {
+    const result = await this.mt5Query<SymbolDetail>('symbol', { symbol });
+    // Prefer MQL5's canonical symbol string (it normalises
+    // case/suffix); fall back to the caller's input if MQL5 didn't
+    // echo it back.
+    return { ...result, symbol: result.symbol ?? symbol };
+  }
+
+  async getOrders(accountRef: string): Promise<BrokerOrder[]> {
+    const rec = this.accounts.get(accountRef);
+    const payload: Record<string, unknown> = {};
+    if (rec) payload.account_id = rec.broker_login;
+    const result = await this.mt5Query<{
+      count?: number;
+      orders?: BrokerOrder[];
+    }>('orders', payload);
+    return result.orders ?? [];
+  }
+
+  async getHistory(
+    accountRef: string,
+    opts?: HistoryQueryOpts,
+  ): Promise<BrokerDeal[]> {
+    const rec = this.accounts.get(accountRef);
+    const payload: Record<string, unknown> = {};
+    if (rec) payload.account_id = rec.broker_login;
+    if (typeof opts?.from === 'number') payload.from = opts.from;
+    if (typeof opts?.to === 'number') payload.to = opts.to;
+    if (typeof opts?.limit === 'number') payload.limit = opts.limit;
+    const result = await this.mt5Query<{
+      count?: number;
+      history?: BrokerDeal[];
+    }>('history', payload);
+    return result.history ?? [];
+  }
+
+  async modifyOrder(
+    accountRef: string,
+    orderId: string,
+    sl: number | null,
+    tp: number | null,
+  ): Promise<{ ok: boolean; reason?: string }> {
+    const rec = this.accounts.get(accountRef);
+    if (!rec) return { ok: false, reason: 'unknown accountRef' };
+    try {
+      const result = await this.mt5Query<{ modified?: boolean; sl?: number; tp?: number }>(
+        'sltp',
+        {
+          account_id: rec.broker_login,
+          order_id: orderId,
+          sl,
+          tp,
+        },
+      );
+      return { ok: result.modified !== false };
+    } catch (e) {
+      return { ok: false, reason: (e as Error).message };
+    }
+  }
+
+  async modifyPosition(
+    accountRef: string,
+    positionId: string,
+    sl: number | null,
+    tp: number | null,
+  ): Promise<{ ok: boolean; reason?: string }> {
+    const rec = this.accounts.get(accountRef);
+    if (!rec) return { ok: false, reason: 'unknown accountRef' };
+    try {
+      const result = await this.mt5Query<{ modified?: boolean; sl?: number; tp?: number }>(
+        'modify_position',
+        {
+          account_id: rec.broker_login,
+          position_id: positionId,
+          sl,
+          tp,
+        },
+      );
+      return { ok: result.modified !== false };
+    } catch (e) {
+      return { ok: false, reason: (e as Error).message };
+    }
+  }
+
+  async cancelOrder(
+    accountRef: string,
+    orderId: string,
+  ): Promise<{ ok: boolean; reason?: string }> {
+    const rec = this.accounts.get(accountRef);
+    if (!rec) return { ok: false, reason: 'unknown accountRef' };
+    try {
+      const result = await this.mt5Query<{ cancelled?: boolean }>('cancel', {
+        account_id: rec.broker_login,
+        order_id: orderId,
+      });
+      return { ok: result.cancelled !== false };
+    } catch (e) {
+      return { ok: false, reason: (e as Error).message };
     }
   }
 

@@ -6,6 +6,7 @@ import { log } from './log.js';
 import { openAndMigrate } from './db/migrate.js';
 import { accountsRepo, type AccountRow } from './db/index.js';
 import { restRoutes } from './api/rest.js';
+import { tradingRoutes } from './api/trading.js';
 import { wsRoutes } from './api/ws.js';
 import { internalRoutes } from './api/internal.js';
 import { registerMobileRoutes } from './web/mobile.js';
@@ -143,6 +144,7 @@ export async function buildApp(cfg: AppConfig): Promise<FastifyInstance> {
   });
 
   await app.register(restRoutes);
+  await app.register(tradingRoutes);
   await app.register(wsRoutes);
   await app.register(internalRoutes);
   await app.register(registerMobileRoutes);

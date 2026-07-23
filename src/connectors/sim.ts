@@ -1,17 +1,24 @@
 import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import type {
-  BrokerConnector,
   AccountState,
   AccountEvent,
-  BrokerEvent,
+  AccountInfo,
+  BrokerConnector,
   BrokerCreds,
+  BrokerDeal,
+  BrokerEvent,
+  BrokerOrder,
+  BrokerPosition,
   Fill,
+  HistoryQueryOpts,
   NewOrder,
   OrderResult,
   Position,
   Quote,
+  SymbolDetail,
   SymbolSpec,
+  SymbolsQueryOpts,
   OrderStatus,
 } from './base.js';
 
@@ -137,7 +144,12 @@ export class SimConnector implements BrokerConnector {
     };
   }
 
-  async symbols(_accountRef: string): Promise<SymbolSpec[]> {
+  async symbols(
+    _accountRef: string,
+    _opts?: SymbolsQueryOpts,
+  ): Promise<SymbolSpec[]> {
+    // Sim ignores pattern/marketWatchOnly — returns the single hardcoded
+    // spec. Keeps the v0.4 interface signature compatible.
     return [
       {
         symbol: 'EURUSD',
@@ -157,6 +169,98 @@ export class SimConnector implements BrokerConnector {
       ask: roundN(1.0834 + (this.rng() - 0.5) * 0.0004, 5),
       ts: Date.now(),
     };
+  }
+
+  // ── v0.4 stubs — kept shape-compatible with the interface so the
+  //    sim connector satisfies BrokerConnector. Real MT5 implementation
+  //    lives in src/connectors/mt5.ts.
+
+  async getAccount(accountRef: string): Promise<AccountInfo> {
+    const rec = this.accounts.get(accountRef);
+    return {
+      login: rec?.ref.broker_login ?? accountRef,
+      server: rec?.ref.broker_server,
+      currency: 'USD',
+      leverage: 100,
+      balance: rec?.balance ?? this.initialBalance,
+      equity: rec?.balance ?? this.initialBalance,
+      margin: 0,
+      margin_free: rec?.balance ?? this.initialBalance,
+      trade_allowed: true,
+    };
+  }
+
+  async getSymbol(_accountRef: string, symbol: string): Promise<SymbolDetail> {
+    return {
+      symbol,
+      digits: 5,
+      point: 0.00001,
+      min_lot: 0.01,
+      max_lot: 100,
+      lot_step: 0.01,
+      currency_base: symbol.slice(0, 3),
+      currency_profit: 'USD',
+      currency_margin: 'USD',
+      description: `Sim ${symbol}`,
+    };
+  }
+
+  async getPositions(accountRef: string): Promise<BrokerPosition[]> {
+    const rec = this.accounts.get(accountRef);
+    if (!rec) return [];
+    const out: BrokerPosition[] = [];
+    for (const [instrument, p] of rec.positions) {
+      if (p.qty < 1e-9) continue;
+      const mark = p.avg_price + (this.rng() - 0.5) * 0.0004;
+      out.push({
+        ticket: `sim-pos-${instrument}`,
+        symbol: instrument,
+        side: p.side === 'long' ? 'buy' : 'sell',
+        volume: p.qty,
+        price_open: p.avg_price,
+        price_current: mark,
+        profit: (mark - p.avg_price) * p.qty * (p.side === 'long' ? 1 : -1),
+        ts_open: Date.now(),
+      });
+    }
+    return out;
+  }
+
+  async getOrders(_accountRef: string): Promise<BrokerOrder[]> {
+    // Sim has no pending-order state machine. Empty is honest.
+    return [];
+  }
+
+  async getHistory(
+    _accountRef: string,
+    _opts?: HistoryQueryOpts,
+  ): Promise<BrokerDeal[]> {
+    return [];
+  }
+
+  async modifyOrder(
+    _accountRef: string,
+    _orderId: string,
+    _sl: number | null,
+    _tp: number | null,
+  ): Promise<{ ok: boolean; reason?: string }> {
+    return { ok: true };
+  }
+
+  async modifyPosition(
+    _accountRef: string,
+    _positionId: string,
+    _sl: number | null,
+    _tp: number | null,
+  ): Promise<{ ok: boolean; reason?: string }> {
+    return { ok: true };
+  }
+
+  async cancelOrder(
+    _accountRef: string,
+    _orderId: string,
+  ): Promise<{ ok: boolean; reason?: string }> {
+    return { ok: true };
   }
 
   async positions(accountRef: string): Promise<Position[]> {
