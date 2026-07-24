@@ -27,6 +27,21 @@ export async function registerMobileRoutes(app: FastifyInstance): Promise<void> 
       .header('Cache-Control', 'no-cache, no-store, must-revalidate')
       .send(MOBILE_HTML);
   });
+  // /desktop — PC-friendly variant. Same VNC, different title and
+  // minimal CSS adjustments (no virtual keyboard, no pinch-zoom
+  // interactions, no mobile topbar). Same MOBILE_HTML for now;
+  // the title and document focus differ. Real desktop-specific
+  // styling can be added later if needed.
+  app.get('/desktop', async (_req, reply) => {
+    const html = MOBILE_HTML.replace(
+      '<title>akroncloud-slot · mobile VNC</title>',
+      '<title>akroncloud-slot · desktop VNC</title>',
+    );
+    reply
+      .type('text/html; charset=utf-8')
+      .header('Cache-Control', 'no-cache, no-store, must-revalidate')
+      .send(html);
+  });
   // 1x1 transparent PNG. Browsers auto-request /favicon.ico on every
   // page load; without this we get a noisy 404 in the console.
   const TRANSPARENT_PNG = Buffer.from(
