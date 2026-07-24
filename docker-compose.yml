@@ -19,6 +19,7 @@ services:
       # v2: MT5 connector also rewritten to TCP (was ZMQ).
       - SLOT_BRIDGE=tcp
       - KASMVNC_PASSWORD=akroncloud
+      - KASMVNC_USERNAME=abc
     ports:
       - "0.0.0.0:7777:7777"   # Slot API (REST + WS) + mobile wrapper
       # KasmVNC :3000 was previously exposed - that is the openbox
