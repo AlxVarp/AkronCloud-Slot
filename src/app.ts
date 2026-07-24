@@ -102,7 +102,25 @@ export async function buildApp(cfg: AppConfig): Promise<FastifyInstance> {
   });
   mt5Tcp.setCommandClient(mt5CmdClient);
 
-  const connector = makeConnector(cfg.connectorId, { db, ledger, tcp: mt5Tcp });
+  // v0.4-trading-api-fix: login-detector's refresh() is wired into
+  // Mt5Connector.onAccountRegistered below. The detector is started
+  // further down (after the connector is built) — we use a closure
+  // variable so the connector can call back to refresh() once it
+  // exists. Without this hook, the post-restart race keeps
+  // /v1/state at loggedIn:false because the boot-time publish fires
+  // before the account is registered.
+  let loginDetectorRefresh: (() => Promise<void>) | undefined;
+
+  const connector = makeConnector(cfg.connectorId, {
+    db,
+    ledger,
+    tcp: mt5Tcp,
+    onAccountRegistered: () => {
+      if (loginDetectorRefresh) {
+        void loginDetectorRefresh();
+      }
+    },
+  });
   const deps: Deps = {
     cfg,
     db,
@@ -169,7 +187,7 @@ export async function buildApp(cfg: AppConfig): Promise<FastifyInstance> {
     './services/login-detector.js'
   );
 
-  startLoginDetector({
+  const loginDetector = startLoginDetector({
     onTransition: async () => {
       log.info({ evt: 'login_detected' }, 'slot transitioned to operational');
     },
@@ -179,6 +197,9 @@ export async function buildApp(cfg: AppConfig): Promise<FastifyInstance> {
     // autostart-able again (see v52 handoff).
     tcp: mt5Tcp,
   });
+  // v0.4-trading-api-fix: capture the refresh handle into the
+  // closure the connector's onAccountRegistered uses.
+  loginDetectorRefresh = loginDetector.refresh;
 
   // Expose the slot lifecycle state for the /v1/state endpoint.
   // We decorate a getter so the value is re-read on every /v1/state

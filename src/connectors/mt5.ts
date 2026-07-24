@@ -72,6 +72,14 @@ export type Mt5ConnectorOpts = {
   ledger: Ledger;
   /** Phase C TCP server (replaces ZMQ PUB/SUB). */
   tcp: Mt5TcpServer;
+  /**
+   * v0.4-trading-api-fix: fired after each successful connect() that
+   * registers a new account. Lets the login-detector re-publish its
+   * current login state so the newly-registered account record picks
+   * up loggedIn:true when MT5 is already logged in (post-restart
+   * race otherwise leaves /v1/state stuck at loggedIn:false).
+   */
+  onAccountRegistered?: (ref: string, login: string, server: string) => void;
 };
 
 type AccountRecord = {
@@ -97,10 +105,16 @@ export class Mt5Connector implements BrokerConnector {
   private readonly db: DB;
   private readonly ledger: Ledger;
   private readonly tcp: Mt5TcpServer;
+  private readonly onAccountRegistered?: (
+    ref: string,
+    login: string,
+    server: string,
+  ) => void;
 
   constructor(opts: Mt5ConnectorOpts) {
     this.db = opts.db;
     this.ledger = opts.ledger;
+    this.onAccountRegistered = opts.onAccountRegistered;
     this.tcp = opts.tcp;
     this.bus.setMaxListeners(0);
 
@@ -144,6 +158,23 @@ export class Mt5Connector implements BrokerConnector {
       equity: 0,
     };
     this.accounts.set(ref, rec);
+
+    // v0.4-trading-api-fix: notify the login-detector so it can
+    // re-publish its current wmctrl-detected login state. Without this
+    // hook the post-restart race keeps /v1/state at loggedIn:false
+    // because the boot-time publish fires before the account is
+    // registered and the detector's state machine then sees no
+    // transition to fire again.
+    if (this.onAccountRegistered) {
+      try {
+        this.onAccountRegistered(ref, creds.login, creds.server);
+      } catch (e) {
+        log.warn(
+          { err: (e as Error).message },
+          'onAccountRegistered callback failed',
+        );
+      }
+    }
 
     log.info(
       { ref, server: creds.server, login: creds.login },

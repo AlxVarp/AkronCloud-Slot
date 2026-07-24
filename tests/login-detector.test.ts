@@ -50,7 +50,40 @@ describe('startLoginDetector with an already-operational state file', () => {
     });
     expect(transitions).toBe(1);
     expect(readSlotState(f)).toBe('operational');
-    stop();
+    stop.stop();
+  });
+});
+
+describe('startLoginDetector.refresh()', () => {
+  it('returns a handle with refresh() and stop()', () => {
+    const f = join(dir, 'state');
+    writeFileSync(f, 'operational\n');
+    const h = startLoginDetector({ stateFile: f, onTransition: () => {} });
+    expect(typeof h.refresh).toBe('function');
+    expect(typeof h.stop).toBe('function');
+    h.stop();
+  });
+
+  it('returns a Promise<void> from refresh()', async () => {
+    const f = join(dir, 'state');
+    writeFileSync(f, 'pending_login\n');
+    let transitions = 0;
+    const h = startLoginDetector({
+      stateFile: f,
+      onTransition: () => {
+        transitions += 1;
+      },
+    });
+    // First tick: pending_login → no transition fired (initial prev is 'unknown').
+    // refresh() schedules a forced tick: in tests wmctrl is mocked but
+    // isLoggedIn() will return false (no wmctrl binary), so tick will
+    // NOT flip the state. We just assert refresh() returns a promise
+    // that resolves without throwing.
+    const r = h.refresh();
+    expect(r).toBeInstanceOf(Promise);
+    await r;
+    expect(transitions).toBe(0); // wmctrl unavailable → not logged in
+    h.stop();
   });
 });
 

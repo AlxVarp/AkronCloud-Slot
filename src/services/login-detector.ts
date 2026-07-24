@@ -139,9 +139,23 @@ export type StartLoginDetectorOpts = {
  * Starts the detector. Returns a stop() function. Idempotent — calling
  * start() twice on a slot that's already operational is a no-op.
  */
-export function startLoginDetector(opts: StartLoginDetectorOpts): () => void {
+export function startLoginDetector(opts: StartLoginDetectorOpts): { stop: () => void; refresh: () => Promise<void> } {
   const stateFile = opts.stateFile ?? STATE_FILE;
   const interval = opts.intervalMs ?? POLL_INTERVAL_MS;
+
+  // v0.4-trading-api-fix: expose a refresh() handle so the rest of the
+  // slot can re-trigger a fresh wmctrl poll after an account is
+  // registered. The race otherwise is:
+  //   boot: state file says "operational" → detector publishes
+  //   logged_in:true once. accounts Map is empty → handleEvent drops
+  //   it. /v1/sync registers the account → no new publish fires (the
+  //   detector thinks user is already logged_in) → /v1/state shows
+  //   loggedIn:false forever. refresh() breaks the stalemate by
+  //   forcing a re-evaluation; if MT5 is still logged in (the
+  //   wmctrl-detected state hasn't changed) tick() will see "logged_in"
+  //   → "logged_in" and skip the publish, BUT we publish anyway via
+  //   forcePublish=true so the new account record gets populated.
+  let forcePublish = false;
 
   let stopped = false;
   // v53: track login state as a state machine (logged_out /
@@ -168,8 +182,13 @@ export function startLoginDetector(opts: StartLoginDetectorOpts): () => void {
     if (stopped) return;
     const now = await isLoggedIn();
     const next: 'logged_out' | 'logged_in' = now ? 'logged_in' : 'logged_out';
-    if (next === prev) return; // no transition
-    log.info({ from: prev, to: next }, 'login-detector state transition');
+    if (next === prev && !forcePublish) return; // no transition
+    const wasForce = forcePublish;
+    forcePublish = false;
+    log.info(
+      { from: prev, to: next, force: wasForce },
+      wasForce ? 'login-detector forced re-publish' : 'login-detector state transition',
+    );
     prev = next;
     if (next === 'logged_in') {
       // First-time login (or login after a logout): write state file,
@@ -238,8 +257,39 @@ export function startLoginDetector(opts: StartLoginDetectorOpts): () => void {
     void tick().catch(() => {});
   });
 
-  return () => {
-    stopped = true;
-    clearInterval(handle);
+  /**
+   * Trigger an immediate re-publish of the current login state. Used by
+   * Mt5Connector.connect() after registering an account so the new
+   * account record picks up loggedIn:true from MT5 (which has been
+   * logged in since before the slot restart).
+   *
+   * Returns a promise that resolves when the tick completes.
+   */
+  const refresh = (): Promise<void> => {
+    forcePublish = true;
+    return new Promise<void>((resolve) => {
+      // Schedule a microtask so the next tick runs before resolve fires;
+      // we use the existing setInterval tick path to keep ordering
+      // identical. If there's already a tick in flight, just resolve on
+      // its completion via a queued setImmediate.
+      setImmediate(() => {
+        tick()
+          .catch((e) =>
+            log.error(
+              { err: (e as Error).message },
+              'login-detector refresh tick error',
+            ),
+          )
+          .finally(() => resolve());
+      });
+    });
+  };
+
+  return {
+    stop: () => {
+      stopped = true;
+      clearInterval(handle);
+    },
+    refresh,
   };
 }
