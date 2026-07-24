@@ -34,6 +34,12 @@ export type ConnectorFactoryOpts = {
   db?: DB;
   ledger?: Ledger;
   tcp?: Mt5TcpServer;
+  /**
+   * v0.4-trading-api-fix: forwarded to Mt5Connector so login-detector
+   * refresh can fire after each account registration (post-restart
+   * race fix). Currently only the MT5 connector uses it.
+   */
+  onAccountRegistered?: (ref: string, login: string, server: string) => void;
 };
 
 export function makeConnector(
