@@ -108,6 +108,12 @@ string g_cmdClientBufs[];
 
 int OnStart()
 {
+   // DEBUG-INSTRUMENTED 2026-07-24 — to confirm OnStart actually runs
+   // and that StartCommandServer gets called. If you see this print in
+   // MT5's Experts tab or MQL5/Logs, my code IS being executed.
+   PrintFormat("DEBUG-ONSTART v2.11b build=%s services=0 cmd_port=%d", __DATETIME__, CmdWebSocketPort);
+   Alert("SlotService started v2.11b", "build " + __DATETIME__);
+
    PrintFormat("SlotService: start on %s poll=%ds cmd_ws=%d", _Symbol, PollSeconds, CmdWebSocketPort);
    uchar wsadata[408];
    int rc = WSAStartup(0x0202, wsadata);
