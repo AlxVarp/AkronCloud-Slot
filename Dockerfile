@@ -202,7 +202,13 @@ fi
 # the s6-setuidgid process below can read it.
 KASMVNC_PASSWORD="${KASMVNC_PASSWORD:-akroncloud}"
 mkdir -p /etc/kasmvnc
-printf '%s\n' "$KASMVNC_PASSWORD" | vncpasswd > /etc/kasmvnc/passwd
+# vncpasswd -f reads the password from stdin and writes the DES
+# hash to stdout (8 bytes). Using -f avoids the interactive
+# "Password:" / "Verify:" / "view-only?" prompts that make the
+# non-flag version write the prompt text to the file (literal
+# 'Password:Verify:') which Xvnc accepts as a password-less file
+# and rejects every RFB connection with "authentication failed".
+printf '%s' "$KASMVNC_PASSWORD" | vncpasswd -f > /etc/kasmvnc/passwd
 chmod 600 /etc/kasmvnc/passwd
 # KasmVNC's HTTP BasicAuth uses a SEPARATE multi-user password file
 # at ${HOME}/.kasmpasswd (per kasmvnc_defaults.yaml:server.advanced).
