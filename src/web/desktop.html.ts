@@ -338,12 +338,22 @@ function connect() {
   const url = getUrl();
   const password = (settings.password || '').trim() || undefined;
 
-  rfb = new RFB(screenEl, url, {
-    wsProtocols: ['binary'],
+  // KasmVNC fork of RFB has signature:
+  //   constructor(target, touchInput, urlOrChannel, options, isPrimaryDisplay)
+  // The URL is the 3rd positional arg, not the 2nd. Passing the URL as
+  // touchInput causes Keyboard to assign .value on the string and the
+  // Websock.attach() check to find that the URL-string isn't a
+  // WebSocket (missing 'send' / 'close' / 'binaryType' properties)
+  // and throw "Raw channel missing property: send". We pass null for
+  // touchInput (no IME on the MT5 canvas itself; the desktop
+  // wrapper's settings modal types via rfb.sendKey).
+  // 5th positional: isPrimaryDisplay = true.
+  rfb = new RFB(screenEl, null, url, {
+    background: '#000',
     shared: true,
     repeaterID: '',
     credentials: password ? { password } : undefined,
-  });
+  }, true);
 
   rfb.addEventListener('connect', () => {
     connecting = false;
