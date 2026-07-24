@@ -66,8 +66,23 @@ export type LoginCallback = () => Promise<void> | void;
  *   - title contains ":" (the post-login "Broker: Account" pattern)
  *
  * We're defensive about wmctrl's exact output format across X servers.
+ *
+ * v0.4-trading-api-fix: when the user is logged in, also extract the
+ * broker_login and broker_server from the window title (e.g.
+ * "32141235 - Deriv-Demo: Demo Account - Hedge - ..." → login
+ * "32141235", server "Deriv-Demo") and return them as a side-channel
+ * via the second element of the returned tuple. The detector's tick()
+ * uses these to populate the published account event with
+ * `data.login` / `data.server`, which the Mt5Connector routing fix
+ * (commit 1dc16ad) needs to dispatch the event to the right account
+ * record when multiple accounts are registered.
+ *
+ * Returns: [loggedIn: boolean, account: { login?, server? } | undefined]
  */
-async function isLoggedIn(): Promise<boolean> {
+async function probeLogin(): Promise<[
+  boolean,
+  { login?: string; server?: string } | undefined,
+]> {
   try {
     const { stdout } = await execFileP('wmctrl', ['-lx'], {
       timeout: 2000,
@@ -75,6 +90,7 @@ async function isLoggedIn(): Promise<boolean> {
     });
     const lines = stdout.split('\n').filter((l) => l.trim());
     let mt5Windows = 0;
+    let firstLoggedInTitle: string | undefined;
     for (const line of lines) {
       // wmctrl -lx with default 1-space separators: <id> <desktop>
       // <instance.class> <host> <title words...>. The 3rd field has a
@@ -89,20 +105,72 @@ async function isLoggedIn(): Promise<boolean> {
       if (!title) continue;
       // Pre-login: "Login" or "MetaTrader 5 - Login"
       if (/^Login\b|^MetaTrader 5 - Login\b|^\s*Login\s*$/i.test(title)) {
-        return false;
+        return [false, undefined];
       }
       // Post-login: any of these patterns
-      if (/^MetaTrader 5/.test(title)) return true; // "MetaTrader 5", "MetaTrader 5 - ...", "MetaTrader 5 - Login" excluded above
-      if (title.includes(':')) return true; // "Broker: Account - ..."
-      if (/^Account:\s/i.test(title)) return true; // "Account: <login>"
+      if (/^MetaTrader 5/.test(title)) {
+        if (!firstLoggedInTitle) firstLoggedInTitle = title;
+        return [true, parseAccountTitle(title)];
+      }
+      if (title.includes(':')) {
+        if (!firstLoggedInTitle) firstLoggedInTitle = title;
+        return [true, parseAccountTitle(title)];
+      }
+      if (/^Account:\s/i.test(title)) {
+        if (!firstLoggedInTitle) firstLoggedInTitle = title;
+        return [true, parseAccountTitle(title)];
+      }
     }
     // Fallback: 2+ MT5 windows and none looks like a login dialog
-    if (mt5Windows >= 2) return true;
-    return false;
+    if (mt5Windows >= 2) {
+      return [true, firstLoggedInTitle ? parseAccountTitle(firstLoggedInTitle) : undefined];
+    }
+    return [false, undefined];
   } catch (e) {
     log.debug({ err: (e as Error).message }, 'isLoggedIn probe failed');
-    return false;
+    return [false, undefined];
   }
+}
+
+/**
+ * Parse MT5's main-window title for broker_login and broker_server.
+ *
+ * Observed title format (wmctrl -lx, after the host field):
+ *   "32141235 - Deriv-Demo: Demo Account - Hedge - Deriv.com Limited - USDCHF,H1"
+ *     → login="32141235", server="Deriv-Demo"
+ *
+ *   "Account: 12345678"
+ *     → login="12345678", server=undefined
+ *
+ *   "MetaTrader 5"
+ *     → nothing parsed (rare; main window with no account info)
+ *
+ * The parsing is best-effort: if the title doesn't match, returns
+ * `{ login: undefined, server: undefined }`. The downstream routing
+ * fix in Mt5Connector handles the missing fields gracefully.
+ */
+export function parseAccountTitle(title: string): { login?: string; server?: string } {
+  const out: { login?: string; server?: string } = {};
+  // Pattern A: "<digits> - <server>: ..." (most common)
+  const m1 = title.match(/^(\d{4,})\s*-\s*([A-Za-z][\w-]*?)\s*:/);
+  if (m1) {
+    out.login = m1[1];
+    out.server = m1[2];
+    return out;
+  }
+  // Pattern B: "Account: <digits>"
+  const m2 = title.match(/^Account:\s*(\d{4,})/i);
+  if (m2) {
+    out.login = m2[1];
+    return out;
+  }
+  return out;
+}
+
+// Back-compat alias used by the tick() loop and refresh().
+async function isLoggedIn(): Promise<boolean> {
+  const [loggedIn] = await probeLogin();
+  return loggedIn;
 }
 
 export function readSlotState(
@@ -180,13 +248,13 @@ export function startLoginDetector(opts: StartLoginDetectorOpts): { stop: () => 
 
   const tick = async (): Promise<void> => {
     if (stopped) return;
-    const now = await isLoggedIn();
-    const next: 'logged_out' | 'logged_in' = now ? 'logged_in' : 'logged_out';
+    const [loggedIn, account] = await probeLogin();
+    const next: 'logged_out' | 'logged_in' = loggedIn ? 'logged_in' : 'logged_out';
     if (next === prev && !forcePublish) return; // no transition
     const wasForce = forcePublish;
     forcePublish = false;
     log.info(
-      { from: prev, to: next, force: wasForce },
+      { from: prev, to: next, force: wasForce, account },
       wasForce ? 'login-detector forced re-publish' : 'login-detector state transition',
     );
     prev = next;
@@ -218,10 +286,18 @@ export function startLoginDetector(opts: StartLoginDetectorOpts): { stop: () => 
         );
       }
       if (opts.tcp) {
+        // v0.4-trading-api-fix: include broker_login + broker_server
+        // parsed from the wmctrl title so the Mt5Connector routing
+        // fix (commit 1dc16ad) can dispatch this event to the right
+        // account record instead of falling back to firstRef().
         opts.tcp.publish({
           type: 'event',
           kind: 'account',
-          data: { logged_in: true },
+          data: {
+            logged_in: true,
+            ...(account?.login ? { login: account.login } : {}),
+            ...(account?.server ? { server: account.server } : {}),
+          },
         });
       }
     } else {

@@ -3,7 +3,11 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { startLoginDetector, readSlotState } from '../src/services/login-detector.js';
+import {
+  startLoginDetector,
+  readSlotState,
+  parseAccountTitle,
+} from '../src/services/login-detector.js';
 
 let dir: string;
 beforeEach(() => {
@@ -110,5 +114,26 @@ describe('login-detector wmctrl regex (parse title)', () => {
       const isLogin = /^Login\b|^MetaTrader 5 - Login\b|^\s*Login\s*$/i.test(t);
       expect(isLogin).toBe(true);
     }
+  });
+});
+
+describe("parseAccountTitle", () => {
+  it("extracts login+server from the standard post-login title", () => {
+    const r = parseAccountTitle("32141235 - Deriv-Demo: Demo Account - Hedge - Deriv.com Limited - USDCHF,H1");
+    expect(r).toEqual({ login: "32141235", server: "Deriv-Demo" });
+  });
+  it("extracts login only from the Account: <digits> pattern", () => {
+    const r = parseAccountTitle("Account: 12345678");
+    expect(r).toEqual({ login: "12345678" });
+  });
+  it("returns empty object for unrelated titles", () => {
+    expect(parseAccountTitle("MetaTrader 5")).toEqual({});
+    expect(parseAccountTitle("Login")).toEqual({});
+    expect(parseAccountTitle("")).toEqual({});
+  });
+  it("handles servers with hyphens (e.g. Deriv-Server-02)", () => {
+    const r = parseAccountTitle("32324375 - Deriv-Server-02: Real Account - Hedge - Deriv.com Limited");
+    expect(r.login).toBe("32324375");
+    expect(r.server).toBe("Deriv-Server-02");
   });
 });
