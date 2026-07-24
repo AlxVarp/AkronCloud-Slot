@@ -107,8 +107,12 @@ export class Mt5Connector implements BrokerConnector {
     // Wire into the TCP server's event stream. The TCP server already
     // dispatches fills to the ledger; we only need per-account
     // fan-out for stream() consumers.
-    this.tcp.onEvent = (evt: ParsedEvent, _account: AccountRow | undefined) => {
-      this.handleEvent(evt);
+    this.tcp.onEvent = (evt: ParsedEvent, account: AccountRow | undefined) => {
+      // Mt5TcpServer.handleEvent has already resolved account by
+      // broker_login from the event payload. Forward it so handleEvent
+      // updates the right record, not firstRef(). See handleEvent
+      // comments for the full rationale.
+      this.handleEvent(evt, account);
     };
     log.info({ url: 'tcp://127.0.0.1:7778' }, 'mt5 connector bound to TCP bridge');
   }
@@ -646,7 +650,7 @@ export class Mt5Connector implements BrokerConnector {
 
   // ────────────────────── internals ──────────────────────
 
-  private handleEvent(evt: ParsedEvent): void {
+  private handleEvent(evt: ParsedEvent, resolvedAccount?: AccountRow | undefined): void {
     // Map TCP events to broker events, filtered by account_login.
     // Phase C: TCP server's onEvent is called once per MQL5 frame.
     // We resolve account_login → accountRef from the registered
@@ -662,12 +666,29 @@ export class Mt5Connector implements BrokerConnector {
       log.debug({ kind: evt.kind }, 'mt5 TCP: unhandled event');
       return;
     }
-    // For Phase C we use a heuristic: pick the first registered
-    // accountRef. Phase C-real will route by account_login once the
-    // connector tracks multiple accounts.
-    const ref = this.firstRef();
+    // Phase C-real: route by the resolved account that Mt5TcpServer
+    // already computed via resolveAccount(broker_login). Falls back to
+    // (1) findRefByLogin for events with a payload login where the
+    // upstream resolver returned undefined, and (2) firstRef() only
+    // for legacy fills with no login in the payload.
+    //
+    // The previous firstRef() heuristic caused account events from one
+    // MT5 session to overwrite state of a different registered
+    // account — e.g. MT5 logged into Deriv-Demo / 32141235 would
+    // publish balance into the Deriv-Server-02 / 32324375 record,
+    // making /v1/state report the wrong account as logged in.
+    let ref: string | undefined;
+    if (resolvedAccount) {
+      ref = `${this.id}-${resolvedAccount.broker_server}-${resolvedAccount.broker_login}`;
+    } else {
+      const payloadLogin = (evt.data as { login?: string | number } | undefined)?.login;
+      if (payloadLogin !== undefined) {
+        ref = this.findRefByLogin(String(payloadLogin));
+      }
+      if (!ref) ref = this.firstRef();
+    }
     if (!ref) {
-      log.debug({ kind: evt.kind, evt }, 'mt5 TCP: no account registered');
+      log.warn({ kind: evt.kind, evt }, 'mt5 TCP: no account registered');
       return;
     }
     const rec = this.accounts.get(ref);
@@ -736,6 +757,15 @@ export class Mt5Connector implements BrokerConnector {
     const it = this.accounts.keys();
     const n = it.next();
     return n.done ? undefined : n.value;
+  }
+
+  private findRefByLogin(brokerLogin: string): string | undefined {
+    for (const [ref, rec] of this.accounts.entries()) {
+      if (rec.broker_login === brokerLogin) {
+        return ref;
+      }
+    }
+    return undefined;
   }
 
   private emitToBus(e: BrokerEvent, ref: string): void {
