@@ -303,14 +303,17 @@ export const DESKTOP_HTML = `<!DOCTYPE html>
   </button>
 </div>
 
-<div id="topbar">
-    <span class="status" id="status"></span>
-    <span class="label" id="statuslabel">connecting…</span>
-    <button id="credsbtn">Login</button>
-    <button id="syncbtn" disabled>Sync</button>
-    <button id="settingsbtn" title="KasmVNC backend settings">⚙</button>
-    <button id="reloadbtn" title="Reconnect">↻</button>
-  </div>
+<!-- Status elements kept as hidden DOM nodes for the FAB's
+     MutationObserver to track the live MT5 state. The visible UI
+     is the FAB (bottom-right). -->
+<div id="topbar" style="display:none" aria-hidden="true">
+  <span class="status" id="status"></span>
+  <span class="label" id="statuslabel">connecting…</span>
+  <button id="credsbtn">Login</button>
+  <button id="syncbtn" disabled>Sync</button>
+  <button id="settingsbtn" title="KasmVNC backend settings">⚙</button>
+  <button id="reloadbtn" title="Reconnect">↻</button>
+</div>
 
   <div id="screen">
     <div id="placeholder">Loading KasmVNC RFB client…</div>
