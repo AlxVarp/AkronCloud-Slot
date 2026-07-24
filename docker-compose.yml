@@ -18,14 +18,17 @@ services:
       # Phase C / Ruta B1 — direct TCP socket MQL5 ↔ slot.
       # v2: MT5 connector also rewritten to TCP (was ZMQ).
       - SLOT_BRIDGE=tcp
+      - KASMVNC_PASSWORD=akroncloud
     ports:
       - "0.0.0.0:7777:7777"   # Slot API (REST + WS) + mobile wrapper
       # KasmVNC :3000 was previously exposed - that is the openbox
       # desktop + xterm shell the attacker used to manually launch the
-      # xmrig Monero miner. Now bound to 127.0.0.1 only; reach it
-      # via SSH tunnel. The slot uses 3000 internally only via
-      # src/web/mt5-ws-proxy.ts -> ws://127.0.0.1:3000/websockify.
-      - "127.0.0.1:3000:3000" # KasmVNC desktop - SSH tunnel ONLY, NOT public
+      # xmrig Monero miner. The post-incident patch left it at
+      # 127.0.0.1-only; we re-expose publicly with a password
+      # (KASMVNC_PASSWORD env var) so the user can debug the MQL5
+      # service directly from a browser. SSH tunnel still works
+      # too — both paths are accepted.
+      - "3000:3000" # KasmVNC desktop — public, password-protected
       - "127.0.0.1:7778:7778"  # MT5 ↔ slot TCP events socket (SlotService + Python publisher)
       - "127.0.0.1:7780:7780"  # MT5 ↔ slot TCP commands socket (v2.11 — slot opens outbound to MQL5)
     volumes:

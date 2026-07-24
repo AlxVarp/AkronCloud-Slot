@@ -177,6 +177,14 @@ RUN chmod +x /etc/s6-overlay/s6-rc.d/svc-de/run
 # akron-mt5-base's svc-kasmvnc uses $DISPLAY in its run script but the
 # var is empty in s6 env (same root cause as svc-de). We rewrite the
 # run script so DISPLAY=:0 is exported before Xvnc is exec'd.
+#
+# v0.4-trading-api-fix: KasmVNC's Xvnc is now password-protected. The
+# password comes from the KASMVNC_PASSWORD env var (default
+# "akroncloud") so we can expose port 3000 to the public internet
+# without leaving the MT5 GUI wide open. The password file is
+# regenerated on every container start so the operator can rotate
+# it via docker-compose environment without rebuilding the image.
+RUN mkdir -p /etc/kasmvnc
 RUN cat > /etc/s6-overlay/s6-rc.d/svc-kasmvnc/run <<'EOSVCKASM'
 #!/usr/bin/with-contenv bash
 export DISPLAY=:0
@@ -189,13 +197,20 @@ fi
 if [ -z ${DRINODE+x} ]; then
   DRINODE="/dev/dri/renderD128"
 fi
+# Generate the VNC password file at boot from KASMVNC_PASSWORD
+# (default: akroncloud). The /etc/kasmvnc dir is owned by abc so
+# the s6-setuidgid process below can read it.
+KASMVNC_PASSWORD="${KASMVNC_PASSWORD:-akroncloud}"
+mkdir -p /etc/kasmvnc
+printf '%s\n' "$KASMVNC_PASSWORD" | vncpasswd > /etc/kasmvnc/passwd
+chmod 600 /etc/kasmvnc/passwd
 exec s6-setuidgid abc \
   /usr/local/bin/Xvnc ${DISPLAY} \
     ${HW3D} \
     -PublicIP 127.0.0.1 \
     -drinode ${DRINODE} \
-    -disableBasicAuth \
-    -SecurityTypes None \
+    -PasswordFile /etc/kasmvnc/passwd \
+    -SecurityTypes VncAuth \
     -AlwaysShared \
     -http-header Cross-Origin-Embedder-Policy=require-corp \
     -http-header Cross-Origin-Opener-Policy=same-origin \
