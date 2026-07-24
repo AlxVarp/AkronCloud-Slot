@@ -9,7 +9,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: ghcr.io/alxvarp/akroncloud-slot:0.3.0-tcp-bridge-v0.4c
+    image: ghcr.io/alxvarp/akroncloud-slot:0.3.0-tcp-bridge-v0.4d
     container_name: akroncloud-slot
     restart: unless-stopped
     env_file:
