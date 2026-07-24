@@ -43,10 +43,24 @@ export async function registerMt5WsProxy(app: FastifyInstance): Promise<void> {
       const clientOrigin =
         (req.headers.origin as string | undefined) ??
         (req.headers.host ? `http://${req.headers.host}` : 'http://localhost');
+      // KasmVNC's WebSocket server (port 6901 / proxied via 3000)
+      // also enforces HTTP BasicAuth on the upgrade when Xvnc is
+      // started with -SecurityTypes VncAuth + -PasswordFile. Without
+      // Authorization the upstream returns 401, which propagates back
+      // to the browser as WebSocket close 1005. Use the slot's
+      // KASMVNC_PASSWORD env var (default 'akroncloud') as the
+      // upstream credentials. The KasmVNC HTTP-side password is
+      // separate from the noVNC's "VNC password" field, so this is
+      // safe to share with the upstream even if the user typed a
+      // different password in the noVNC settings panel.
+      const kasmPassword = process.env.KASMVNC_PASSWORD || 'akroncloud';
+      const kasmAuth =
+        'Basic ' + Buffer.from(`:${kasmPassword}`).toString('base64');
       const upstream = new WebSocket(upstreamUrl, ['binary'], {
         headers: {
           Origin: clientOrigin,
           'Sec-WebSocket-Origin': clientOrigin,
+          Authorization: kasmAuth,
         },
       });
 
