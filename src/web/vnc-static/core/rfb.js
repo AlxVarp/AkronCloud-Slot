@@ -2107,7 +2107,14 @@ export default class RFB extends EventTargetMixin {
 
         this._mouseLastScreenIndex = this._display.screenIndex;
         this._setLastActive();
-        const mappedButton = this.mouseButtonMapper.get(ev.button);
+        // mouseButtonMapper is created during the RFB handshake
+        // (after ServerInit). Mouse events that arrive before the
+        // handshake completes (constructor → first connect) used to
+        // throw "Cannot read properties of null (reading 'get')".
+        // Guard with a fallback to the raw button number.
+        const mappedButton = this.mouseButtonMapper
+          ? this.mouseButtonMapper.get(ev.button)
+          : ev.button;
         switch (ev.type) {
             case 'mousedown':
                 if (this._display.screens.length === 0 || window.self === window.top) {
@@ -3789,7 +3796,13 @@ export default class RFB extends EventTargetMixin {
         if (status) {
             Log.Info("Unix relay subscription succeeded");
         } else {
-            Log.Warn("Unix relay subscription failed, " + payload);
+            // KasmVNC's unix-relay feature is for sharing a host-side
+            // AF_UNIX socket with the client. The /desktop wrapper
+            // never calls rfb.subscribeUnixRelay(), so any subscription
+            // response from the server is unsolicited and the failure
+            // is expected. Demoted from Warn to Debug to keep the
+            // browser console clean.
+            Log.Debug("Unix relay subscription failed, " + payload);
         }
     }
 
