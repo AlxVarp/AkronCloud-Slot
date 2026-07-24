@@ -113,6 +113,87 @@ export const DESKTOP_HTML = `<!DOCTYPE html>
       pointer-events: none;
     }
 
+    /* Floating action button (bottom-right corner). Always visible
+       regardless of topbar state. The status dot is the live MT5
+       state; click opens a popover with quick actions so the user
+       doesn't have to reach for the slim topbar. The popover
+       is the same popover menu used in the mobile wrapper, lifted
+       into the desktop so the user can reach it from anywhere on
+       screen. */
+    #fab {
+      position: fixed;
+      right: 16px;
+      bottom: 16px;
+      z-index: 50;
+      display: flex; flex-direction: column; align-items: flex-end;
+      gap: 8px;
+    }
+    #fab .trigger {
+      width: 48px; height: 48px;
+      border-radius: 50%;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      color: var(--fg);
+      box-shadow: 0 6px 20px rgba(0,0,0,.45);
+      cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      position: relative;
+      transition: transform .12s ease, background .12s ease;
+    }
+    #fab .trigger:hover { background: #21262d; }
+    #fab .trigger:active { transform: scale(.96); }
+    #fab .trigger .status {
+      position: absolute;
+      top: 6px; right: 6px;
+      width: 10px; height: 10px;
+      border-radius: 50%;
+      background: var(--muted);
+      box-shadow: 0 0 0 2px var(--panel);
+    }
+    #fab .trigger .status.ok { background: var(--ok); }
+    #fab .trigger .status.err { background: var(--danger); }
+    #fab .trigger .icon {
+      font-size: 18px;
+      line-height: 1;
+    }
+    #fab .menu {
+      display: none;
+      flex-direction: column;
+      min-width: 200px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      box-shadow: 0 6px 20px rgba(0,0,0,.45);
+      overflow: hidden;
+    }
+    #fab.open .menu { display: flex; }
+    #fab .menu button {
+      display: flex; align-items: center; gap: 10px;
+      width: 100%;
+      background: transparent;
+      color: var(--fg);
+      border: 0;
+      border-bottom: 1px solid var(--border);
+      padding: 10px 14px;
+      font-size: 13px;
+      text-align: left;
+      cursor: pointer;
+    }
+    #fab .menu button:last-child { border-bottom: 0; }
+    #fab .menu button:hover { background: #21262d; }
+    #fab .menu button.primary {
+      background: var(--accent);
+      color: #fff;
+    }
+    #fab .menu .icon {
+      width: 16px; text-align: center;
+      font-size: 14px;
+      flex-shrink: 0;
+    }
+    #fab .menu .label {
+      flex: 1;
+    }
+
     /* Settings modal: KasmVNC backend connection settings. */
     #settings {
       position: fixed; inset: 0; background: rgba(0,0,0,.6);
@@ -196,7 +277,33 @@ export const DESKTOP_HTML = `<!DOCTYPE html>
 </head>
 <body>
 <div id="app">
-  <div id="topbar">
+<div id="fab">
+  <div class="menu" role="menu" aria-label="Quick actions">
+    <button id="fab_login" class="primary" type="button">
+      <span class="icon">🔑</span>
+      <span class="label">Broker login</span>
+    </button>
+    <button id="fab_sync" type="button">
+      <span class="icon">🔄</span>
+      <span class="label">Resync account</span>
+    </button>
+    <button id="fab_settings" type="button">
+      <span class="icon">⚙</span>
+      <span class="label">Backend settings</span>
+    </button>
+    <button id="fab_reconnect" type="button">
+      <span class="icon">↻</span>
+      <span class="label">Reconnect VNC</span>
+    </button>
+  </div>
+  <button class="trigger" id="fab_trigger" type="button"
+          aria-label="Quick actions" aria-haspopup="true">
+    <span class="status" id="fab_status"></span>
+    <span class="icon">⚡</span>
+  </button>
+</div>
+
+<div id="topbar">
     <span class="status" id="status"></span>
     <span class="label" id="statuslabel">connecting…</span>
     <button id="credsbtn">Login</button>
@@ -552,6 +659,40 @@ async function doResetMt5() {
   $('credsheet').classList.remove('open');
   await selectAllAndDelete();
 }
+
+// Floating action button: popover with quick actions. Mirrors the
+// topbar buttons so the user doesn't have to reach for the slim
+// topbar at the top of the page; especially useful when running
+// fullscreen. The trigger button shows the live MT5 connection
+// status (color-coded dot) and toggles a popover with the same
+// actions as the topbar (login, sync, settings, reconnect).
+const fab = $('fab');
+const fabStatus = $('fab_status');
+$('fab_trigger').addEventListener('click', () => {
+  fab.classList.toggle('open');
+});
+// Close the popover when clicking outside the FAB.
+document.addEventListener('click', (ev) => {
+  if (!fab.contains(ev.target)) fab.classList.remove('open');
+});
+// Sync the FAB status dot with the live state (mirror of #status).
+const fabSync = new MutationObserver(() => {
+  const cls = $('status').className;
+  fabStatus.className = 'status' + (cls.includes('ok') ? ' ok' : cls.includes('err') ? ' err' : '');
+});
+fabSync.observe($('status'), { attributes: true, attributeFilter: ['class'] });
+fabStatus.className = 'status'; // initial: gray = connecting
+// FAB menu actions — mirror the topbar buttons.
+$('fab_login').addEventListener('click', () => { fab.classList.remove('open'); $('credsbtn').click(); });
+$('fab_sync').addEventListener('click',   () => { fab.classList.remove('open'); $('syncbtn').click(); });
+$('fab_settings').addEventListener('click', () => { fab.classList.remove('open'); $('settingsbtn').click(); });
+$('fab_reconnect').addEventListener('click', () => { fab.classList.remove('open'); $('reloadbtn').click(); });
+// Close on Escape so the popover doesn't trap focus.
+document.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Escape' && fab.classList.contains('open')) {
+    fab.classList.remove('open');
+  }
+});
 
 // Boot
 connect();
