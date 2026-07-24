@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import net from 'node:net';
 
 import { type Deps } from '../app.js';
 import { validateAccount } from '../validator.js';
@@ -33,14 +34,42 @@ export async function restRoutes(app: FastifyInstance): Promise<void> {
   // GET /v1/health - unauthenticated. Used by anything that wants
   // to know the slot is alive: the cerebro (if it's reattached
   // later), the mobile wrapper, kubernetes probes, etc.
-  app.get('/v1/health', async () => ({
-    status: 'ok',
-    uptime_s: Math.floor(process.uptime()),
-    version: '0.2.0',
-    service: 'akroncloud-slot',
-    slot_id: deps.cfg.slotId,
-    connector: deps.cfg.connectorId,
-  }));
+  app.get('/v1/health', async () => {
+    // Probe the MQL5 command port (7780 by default, see env
+    // SLOT_MT5_CMD_PORT). This is the same socket the slot's
+    // cmdClient tries to connect to before dispatching a trade.
+    // Surfacing it on /health makes the broker-down case visible
+    // without a separate /v1/diagnostics roundtrip.
+    const cmdPort = Number(process.env.SLOT_MT5_CMD_PORT ?? 7780);
+    const probe = await new Promise<'listening' | 'closed' | 'unreachable'>(
+      (resolve) => {
+        const sock = net.createConnection({ host: '127.0.0.1', port: cmdPort });
+        const done = (state: 'listening' | 'closed' | 'unreachable') => {
+          sock.destroy();
+          resolve(state);
+        };
+        sock.setTimeout(1500, () => done('unreachable'));
+        sock.once('connect', () => done('listening'));
+        sock.once('error', (e: NodeJS.ErrnoException) => {
+          if (e.code === 'ECONNREFUSED') done('closed');
+          else done('unreachable');
+        });
+      },
+    );
+    return {
+      status: 'ok',
+      uptime_s: Math.floor(process.uptime()),
+      version: '0.2.0',
+      service: 'akroncloud-slot',
+      slot_id: deps.cfg.slotId,
+      connector: deps.cfg.connectorId,
+      mt5: {
+        cmd_port: cmdPort,
+        cmd_port_state: probe, // 'listening' | 'closed' | 'unreachable'
+        events_socket: '127.0.0.1:7778', // the slot's own TCP server
+      },
+    };
+  });
 
   // GET /v1/state - the single configured account. Read-only.
   // Returns the account row + the live connector state. No
