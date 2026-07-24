@@ -284,8 +284,20 @@ let connecting = false;
 let connected = false;
 
 const DEFAULT_URL = '/mt5-ws';
-const TARGET_W = 1024;
-const TARGET_H = 768;
+// Target the host's native 1024x768 Xvnc geometry by default, but
+// ask KasmVNC to grow it to 1920x1080 (real desktop) on every
+// connect. If the server accepts (KasmVNC does), MT5 lays out at
+// 1920x1080 — chart candles, panels, all get the full desktop's
+// worth of pixels and stay sharp when the browser window is
+// 1920x1080 or smaller. If the server rejects (e.g. Xvnc is
+// pinned to 1024x768 in the Dockerfile), we keep the 1024x768
+// buffer and the CSS scale-up handles the rest.
+const FALLBACK_W = 1024;
+const FALLBACK_H = 768;
+const REQUEST_W = 1920;
+const REQUEST_H = 1080;
+let desktopW = FALLBACK_W; // updated by desktoplayout events
+let desktopH = FALLBACK_H;
 
 function setStatus(state, text) {
   statusEl.className = 'status' + (state ? ' ' + state : '');
@@ -294,16 +306,19 @@ function setStatus(state, text) {
 
 function fitScreen() {
   if (!rfb) return;
-  // The RFB canvas is rendered at TARGET_W × TARGET_H (the host's
-  // Xvnc resolution). We scale it to fit the available area while
-  // preserving the 4:3 aspect. Letterboxing on either axis.
+  // The RFB canvas is rendered at desktopW × desktopH (the server's
+  // current virtual desktop size, updated via the desktoplayout
+  // event). We scale it to fit the available area while preserving
+  // the aspect ratio — letterboxing on the constrained axis. This
+  // gives a sharp 1:1 render on screens at-or-above the target and
+  // a clean downscale on smaller windows (no blurry upscale).
   const wrap = screenEl.getBoundingClientRect();
   const scale = Math.min(
-    wrap.width  / TARGET_W,
-    wrap.height / TARGET_H,
+    wrap.width  / desktopW,
+    wrap.height / desktopH,
   );
-  const w = Math.floor(TARGET_W * scale);
-  const h = Math.floor(TARGET_H * scale);
+  const w = Math.floor(desktopW * scale);
+  const h = Math.floor(desktopH * scale);
   const canvas = rfb.getCanvas?.() || rfb._canvas || screenEl.querySelector('canvas');
   if (!canvas) return;
   canvas.style.width  = w + 'px';
@@ -361,6 +376,25 @@ function connect() {
     setStatus('ok', 'connected');
     placeholderEl.style.display = 'none';
     fitScreen();
+    // Ask KasmVNC to grow the virtual desktop to 1920x1080 once. The
+    // RFB gate (rfb.js:1595) lets SetDesktopSize go through when
+    // either resizeSession or forcedResolutionX/Y is set. We use
+    // forcedResolution (vs resizeSession=true) so the Xvnc is
+    // pinned to 1920x1080 exactly — no per-window-resize renegotiation
+    // (which would jitter MT5 charts every time the user moves the
+    // browser). If KasmVNC rejects the request, the canvas keeps
+    // its original buffer size and CSS scales up.
+    try {
+      rfb.forcedResolutionX = REQUEST_W;
+      rfb.forcedResolutionY = REQUEST_H;
+      // Trigger the request via the resizeSession flow (read by the
+      // gate at the top of _handleDesktopResize).
+      rfb.resizeSession = true;
+      // …but undo the autoresize-on-every-resize side-effect by
+      // flipping it off right after the first request. Next user
+      // resize just re-fits the CSS canvas, not the Xvnc.
+      setTimeout(() => { rfb.resizeSession = false; }, 250);
+    } catch (_) { /* server may not support it */ }
   });
   rfb.addEventListener('disconnect', (e) => {
     connecting = false;
@@ -375,7 +409,18 @@ function connect() {
   rfb.addEventListener('capabilities', () => {
     fitScreen();
   });
-  rfb.addEventListener('desktoplayout', () => {
+  rfb.addEventListener('desktoplayout', (e) => {
+    // Server confirmed the new (or original) desktop size. Update
+    // the cached dimensions so fitScreen uses the right scale, then
+    // re-fit. The detail usually carries { width, height } in
+    // server coordinates; we use a defensive fallback for older
+    // server versions.
+    const w = e?.detail?.width  || rfb._fbWidth  || desktopW;
+    const h = e?.detail?.height || rfb._fbHeight || desktopH;
+    if (w > 0 && h > 0) {
+      desktopW = w;
+      desktopH = h;
+    }
     fitScreen();
   });
   rfb.scaleViewport = false; // we do our own letterboxed fit
