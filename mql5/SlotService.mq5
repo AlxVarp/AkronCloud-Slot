@@ -907,7 +907,9 @@ void StartCommandServer()
    ArrayResize(g_cmdClients, 0);
    ArrayResize(g_cmdClientBufs, 0);
 
+   Print("SlotService: cmd server: calling socket()");
    int s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+   PrintFormat("SlotService: cmd server: socket()=%d err=%d", s, WSAGetLastError());
    if(s == INVALID_SOCKET) {
       PrintFormat("SlotService: cmd server socket() err=%d", WSAGetLastError());
       return;
@@ -919,19 +921,27 @@ void StartCommandServer()
    ushort port_be = HTONS((ushort)CmdWebSocketPort);
    addr[2] = (uchar)(port_be & 0xFF);
    addr[3] = (uchar)((port_be >> 8) & 0xFF);
-   addr[4] = 127; addr[5] = 0; addr[6] = 0; addr[7] = 1;
-   if(bind(s, addr, 16) == SOCKET_ERROR) {
+   // Try 0.0.0.0 (all interfaces) instead of 127.0.0.1 — wine 11.0
+   // sometimes has quirky 127.0.0.1 binding in MQL5 services.
+   addr[4] = 0; addr[5] = 0; addr[6] = 0; addr[7] = 0;
+   PrintFormat("SlotService: cmd server: calling bind() port=%d port_be=%d", CmdWebSocketPort, port_be);
+   int brc = bind(s, addr, 16);
+   PrintFormat("SlotService: cmd server: bind()=%d err=%d", brc, WSAGetLastError());
+   if(brc == SOCKET_ERROR) {
       PrintFormat("SlotService: cmd bind err=%d", WSAGetLastError());
       closesocket(s);
       return;
    }
-   if(listen(s, MAX_CMD_CLIENTS) == SOCKET_ERROR) {
+   Print("SlotService: cmd server: calling listen()");
+   int lrc = listen(s, MAX_CMD_CLIENTS);
+   PrintFormat("SlotService: cmd server: listen()=%d err=%d", lrc, WSAGetLastError());
+   if(lrc == SOCKET_ERROR) {
       PrintFormat("SlotService: cmd listen err=%d", WSAGetLastError());
       closesocket(s);
       return;
    }
    g_cmdListenSock = s;
-   PrintFormat("SlotService: command server listening on 127.0.0.1:%d", CmdWebSocketPort);
+   PrintFormat("SlotService: COMMAND SERVER LISTENING on 0.0.0.0:%d socket=%d", CmdWebSocketPort, s);
 }
 
 void StopCommandServer()
