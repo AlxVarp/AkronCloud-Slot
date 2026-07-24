@@ -212,6 +212,11 @@ chmod 600 /etc/kasmvnc/passwd
 KASMVNC_USERNAME="${KASMVNC_USERNAME:-abc}"
 printf '%s\n%s\n' "$KASMVNC_PASSWORD" "$KASMVNC_PASSWORD" | kasmvncpasswd -u "$KASMVNC_USERNAME"
 chmod 600 /config/.kasmpasswd
+# Both files must be owned by abc (the user that s6-setuidgid drops
+# to before exec'ing Xvnc). kasmvncpasswd writes the file as root;
+# if we don't chown, Xvnc (running as abc) can't read it and the
+# HTTP auth rejects every login with 401.
+chown abc:abc /etc/kasmvnc/passwd /config/.kasmpasswd
 exec s6-setuidgid abc \
   /usr/local/bin/Xvnc ${DISPLAY} \
     ${HW3D} \
