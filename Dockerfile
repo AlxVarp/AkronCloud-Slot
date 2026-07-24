@@ -220,6 +220,7 @@ exec s6-setuidgid abc \
     -PublicIP 127.0.0.1 \
     -drinode ${DRINODE} \
     -PasswordFile /etc/kasmvnc/passwd \
+    -KasmPasswordFile /config/.kasmpasswd \
     -SecurityTypes VncAuth \
     -AlwaysShared \
     -http-header Cross-Origin-Embedder-Policy=require-corp \
