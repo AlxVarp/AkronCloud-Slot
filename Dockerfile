@@ -204,6 +204,16 @@ KASMVNC_PASSWORD="${KASMVNC_PASSWORD:-akroncloud}"
 mkdir -p /etc/kasmvnc
 printf '%s\n' "$KASMVNC_PASSWORD" | vncpasswd > /etc/kasmvnc/passwd
 chmod 600 /etc/kasmvnc/passwd
+# KasmVNC's HTTP auth uses a SEPARATE password file at
+# ${HOME}/.kasmpasswd (per kasmvnc_defaults.yaml:server.advanced).
+# We need both: /etc/kasmvnc/passwd is for the Xvnc RFB protocol
+# (used by VNC clients), ${HOME}/.kasmpasswd is for the KasmVNC
+# HTTP server (used by browser clients via the noVNC web UI).
+# Without the second file, the browser gets HTTP 401 even with the
+# correct Xvnc password. Both files are written from the same
+# KASMVNC_PASSWORD env var so there's only one secret to rotate.
+printf '%s' "$KASMVNC_PASSWORD" > /config/.kasmpasswd
+chmod 600 /config/.kasmpasswd
 exec s6-setuidgid abc \
   /usr/local/bin/Xvnc ${DISPLAY} \
     ${HW3D} \
