@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { MOBILE_HTML } from './mobile.html.js';
+import { DESKTOP_HTML } from './desktop.html.js';
 import { registerVncStaticRoutes } from './vnc-static-routes.js';
 import { registerMt5WsProxy } from './mt5-ws-proxy.js';
 
@@ -37,16 +38,20 @@ export async function registerMobileRoutes(app: FastifyInstance): Promise<void> 
       .header('Cache-Control', 'no-cache, no-store, must-revalidate')
       .send(MOBILE_HTML);
   });
-  // /desktop — redirect to the KasmVNC native client which
-  // is the upstream-tested RFB client. The earlier variant
-  // (custom RFB client with FAB) had canvas-dimension issues
-  // that left the screen black; the next variant (iframe
-  // to /vnc-static/) had iframe-isolation issues with the same
-  // result. The simplest path is to just send the user to the
-  // KasmVNC client directly. The user can still call the slot's
-  // REST API from the browser console for sync / login if needed.
+  // /desktop — desktop-friendly VNC wrapper for KasmVNC.
+  // /mobile is the proven-working template; /desktop is a thinner
+  // variant of the same approach: same RFB client (noVNC core),
+  // same /mt5-ws proxy, no virtual keyboard, FAB at the bottom-right
+  // for quick access to login / sync / reconnect. The layout is
+  // desktop-first: full RFB canvas fills the viewport, real keyboard
+  // input works because the RFB client captures key events from
+  // the canvas. (We removed the iOS / mobile-only padding and
+  // credential-fill UI for desktop.)
   app.get('/desktop', async (_req, reply) => {
-    reply.redirect('/vnc-static/', 302);
+    reply
+      .type('text/html; charset=utf-8')
+      .header('Cache-Control', 'no-cache, no-store, must-revalidate')
+      .send(DESKTOP_HTML);
   });
   // 1x1 transparent PNG. Browsers auto-request /favicon.ico on every
   // page load; without this we get a noisy 404 in the console.
