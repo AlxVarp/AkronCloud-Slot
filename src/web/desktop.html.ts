@@ -448,6 +448,18 @@ function fitScreen() {
   const h = Math.floor(desktopH * scale);
   const canvas = rfb.getCanvas?.() || rfb._canvas || screenEl.querySelector('canvas');
   if (!canvas) return;
+  // IMPORTANT: set BOTH the CSS display size (style.width/height)
+  // and the drawing surface size (canvas.width/height). The noVNC
+  // RFB client normally sets canvas.width/height when it receives
+  // the framebuffer size from the server, but if it never does
+  // (e.g. the server doesn't send a framebuffer update for some
+  // reason), the canvas stays at 0x0 and the user sees a black
+  // screen. Mirroring desktopW/desktopH into the canvas attribute
+  // ensures the drawing surface always has the right dimensions.
+  // Trade-off: if the noVNC client later tries to set a different
+  // size, it will overwrite this — which is what we want.
+  if (canvas.width !== desktopW)  canvas.width  = desktopW;
+  if (canvas.height !== desktopH) canvas.height = desktopH;
   canvas.style.width  = w + 'px';
   canvas.style.height = h + 'px';
 }
