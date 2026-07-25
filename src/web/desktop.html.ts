@@ -503,25 +503,14 @@ function connect() {
     setStatus('ok', 'connected');
     placeholderEl.style.display = 'none';
     fitScreen();
-    // Ask KasmVNC to grow the virtual desktop to 1920x1080 once. The
-    // RFB gate (rfb.js:1595) lets SetDesktopSize go through when
-    // either resizeSession or forcedResolutionX/Y is set. We use
-    // forcedResolution (vs resizeSession=true) so the Xvnc is
-    // pinned to 1920x1080 exactly — no per-window-resize renegotiation
-    // (which would jitter MT5 charts every time the user moves the
-    // browser). If KasmVNC rejects the request, the canvas keeps
-    // its original buffer size and CSS scales up.
-    try {
-      rfb.forcedResolutionX = REQUEST_W;
-      rfb.forcedResolutionY = REQUEST_H;
-      // Trigger the request via the resizeSession flow (read by the
-      // gate at the top of _handleDesktopResize).
-      rfb.resizeSession = true;
-      // …but undo the autoresize-on-every-resize side-effect by
-      // flipping it off right after the first request. Next user
-      // resize just re-fits the CSS canvas, not the Xvnc.
-      setTimeout(() => { rfb.resizeSession = false; }, 250);
-    } catch (_) { /* server may not support it */ }
+    // Don't ask KasmVNC to resize the desktop. The KasmVNC Xvnc
+    // fork in this image doesn't honor SetDesktopSize (we tested
+    // REQUEST_W=1920, REQUEST_H=1080 and the framebuffer stayed at
+    // the Xvnc's -geometry 1024x768 initial size, leaving a black
+    // border around the MT5 area when the browser viewport is
+    // larger than 1024x768). The RFB client's desktoplayout event
+    // already reports the actual server framebuffer size, which
+    // fitScreen uses.
   });
   rfb.addEventListener('disconnect', (e) => {
     connecting = false;
