@@ -376,12 +376,29 @@ if (typeof RFB.prototype.ui.hookConnectCallback !== 'function') {
   RFB.prototype.ui.hookConnectCallback = function() {};
 }
 
-// Persistent settings. KasmVNC is open by default (no password)
-// so the slot's /desktop doesn't ask the user to type one.
+// Persistent settings. KasmVNC has a password (set via
+// KASMVNC_PASSWORD at image build time, default 'akroncloud').
+// The noVNC RFB client needs the SAME password for the VNC RFB
+// security handshake (VncAuth) — the KasmVNC HTTP auth (BasicAuth)
+// and the VNC RFB auth are two separate credentials, even though
+// they happen to use the same value.
+// The desktop wrapper pre-fills the RFB password with the slot's
+// KASMVNC_PASSWORD so the user doesn't have to type it in the
+// noVNC settings panel. The user can still override via the
+// settings panel (⚙ button) if they want.
 const SETTINGS_KEY = 'akron-desktop-settings';
 const CREDS_KEY = 'akron-broker-creds';
 const settings = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}');
 const creds = JSON.parse(localStorage.getItem(CREDS_KEY) || 'null');
+// Default RFB password = KASMVNC_PASSWORD. Inlined as 'akroncloud'
+// here (matching the docker-compose.yml default and the Dockerfile
+// fallback) so /desktop works out of the box even if the user
+// hasn't visited the settings panel yet. Override at runtime
+// by opening the settings panel (⚙) and entering a different
+// password — that gets stored in localStorage and wins over the
+// default.
+const DEFAULT_RFB_PASSWORD = 'akroncloud';
+if (!settings.password) settings.password = DEFAULT_RFB_PASSWORD;
 
 const $ = (id) => document.getElementById(id);
 const statusEl = $('status');
