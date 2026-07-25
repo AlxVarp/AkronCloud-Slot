@@ -25,9 +25,14 @@ import { log } from '../log.js';
  */
 export async function registerMt5WsProxy(app: FastifyInstance): Promise<void> {
   // @fastify/websocket is already registered at app.ts boot.
-  // We just add our /mt5-ws route here.
+  // We register both /mt5-ws (the slot's own RFB client in
+  // desktop.html.ts when we used it) and /websockify (the default
+  // path the KasmVNC native client expects — its vnc.html and
+  // app/ui.js hardcode `path: 'websockify'`). Both routes pipe
+  // bytes between the same browser WS and the same upstream
+  // KasmVNC WS at :3000/websockify on the same host.
   app.register(async (instance) => {
-    instance.get('/mt5-ws', { websocket: true }, (socket, req) => {
+    const handleWs = (socket: any, req: any) => {
       const client = socket;
 
       // Spawn the upstream WS to KasmVNC. Same path KasmVNC's
@@ -132,7 +137,10 @@ export async function registerMt5WsProxy(app: FastifyInstance): Promise<void> {
       log.info({
         ua: req.headers['user-agent']?.slice(0, 60) ?? '',
         origin: req.headers.origin ?? '',
-      }, 'mt5-ws client connected');
-    });
+      }, 'mt5-ws proxy client connected');
+    };
+
+    instance.get('/mt5-ws', { websocket: true }, handleWs);
+    instance.get('/websockify', { websocket: true }, handleWs);
   });
 }
