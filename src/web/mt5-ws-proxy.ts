@@ -54,8 +54,9 @@ export async function registerMt5WsProxy(app: FastifyInstance): Promise<void> {
       // safe to share with the upstream even if the user typed a
       // different password in the noVNC settings panel.
       const kasmPassword = process.env.KASMVNC_PASSWORD || 'akroncloud';
+      const kasmUser = process.env.KASMVNC_USERNAME || 'abc';
       const kasmAuth =
-        'Basic ' + Buffer.from(`:${kasmPassword}`).toString('base64');
+        'Basic ' + Buffer.from(`${kasmUser}:${kasmPassword}`).toString('base64');
       const upstream = new WebSocket(upstreamUrl, ['binary'], {
         headers: {
           Origin: clientOrigin,
