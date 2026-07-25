@@ -58,11 +58,9 @@ export const DESKTOP_HTML = `<!DOCTYPE html>
       background: #0b0e14;
       position: relative;
       overflow: hidden;
-      display: flex;
-      align-items: center;
-      justify-content: center;
+      touch-action: none;
     }
-    #screen canvas { display: block; transform-origin: center center; }
+    #screen canvas { display: block; transform-origin: 0 0; }
     #placeholder {
       position: absolute; inset: 0;
       display: flex; align-items: center; justify-content: center;
@@ -233,6 +231,16 @@ function fitScreen() {
   const h = Math.floor(desktopH * scale);
   const canvas = rfb.getCanvas?.() || rfb._canvas || screenEl.querySelector('canvas');
   if (!canvas) return;
+  // Force the drawing surface dimensions. The KasmVNC Xvnc fork in
+  // this image doesn't push an initial framebuffer update on connect,
+  // so the noVNC RFB client never sets canvas.width/height from the
+  // server's framebuffer size — the canvas stays at 0x0 and the
+  // user sees a black screen. Mirroring desktopW/desktopH into the
+  // canvas attributes ensures the drawing surface is always the right
+  // size; the noVNC client can still override later if it does
+  // receive a different size.
+  if (canvas.width !== desktopW)  canvas.width  = desktopW;
+  if (canvas.height !== desktopH) canvas.height = desktopH;
   canvas.style.width  = w + 'px';
   canvas.style.height = h + 'px';
 }
