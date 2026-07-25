@@ -230,7 +230,7 @@ exec s6-setuidgid abc \
     -drinode ${DRINODE} \
     -PasswordFile /etc/kasmvnc/passwd \
     -KasmPasswordFile /config/.kasmpasswd \
-    -SecurityTypes VncAuth \
+    -SecurityTypes None \
     -AlwaysShared \
     -http-header Cross-Origin-Embedder-Policy=require-corp \
     -http-header Cross-Origin-Opener-Policy=same-origin \
