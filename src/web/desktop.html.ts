@@ -252,6 +252,47 @@ function getUrl() {
   return proto + '//' + location.host + (u.startsWith('/') ? u : '/' + u);
 }
 
+// Force the RFB client's inner wrapper <div> + canvas to be properly
+// positioned/displayed. The KasmVNC fork's noVNC inlines
+// \`display:flex; margin:auto\` on the canvas via its constructor,
+// which wins over author CSS via inline style specificity. Without
+// the explicit overrides below, the canvas is sometimes drawn at
+// 0x0 (especially in iframes / non-trivial layouts) and the user
+// sees a blank screen even though the RFB connection is live. This
+// is the same fix the /mobile wrapper uses (see mobile.html.ts).
+function applyCanvasCentering() {
+  const rfbScreen = screenEl.querySelector('div');
+  if (rfbScreen) {
+    rfbScreen.style.position = 'relative';
+    rfbScreen.style.width = '100%';
+    rfbScreen.style.height = '100%';
+    rfbScreen.style.display = 'block';
+  }
+  const canvas = screenEl.querySelector('canvas');
+  if (canvas) {
+    canvas.style.position = 'absolute';
+    canvas.style.top = '50%';
+    canvas.style.left = '50%';
+    canvas.style.margin = '0';
+    canvas.style.transform = 'translate(-50%, -50%)';
+  }
+}
+
+// Fit + refresh: scale the RFB viewport, request a fresh framebuffer
+// update from the server (KasmVNC won't push a new frame on a
+// re-connect without an explicit request), and re-apply the canvas
+// centering. Same as /mobile's \`fit()\` helper.
+function fit() {
+  if (!rfb) return;
+  setStatus('ok', 'refitting + refreshing framebuffer…');
+  try { rfb._updateScale(); } catch (e) { /* defensive */ }
+  try {
+    RFB.messages.fbUpdateRequest(rfb._sock, false, 0, 0, rfb._fbWidth, rfb._fbHeight);
+  } catch (e) { /* defensive */ }
+  applyCanvasCentering();
+  setTimeout(() => setStatus('ok', 'refreshed (' + (rfb._fbWidth || 0) + 'x' + (rfb._fbHeight || 0) + ')'), 350);
+}
+
 function disconnect() {
   if (rfb) {
     try { rfb.disconnect(); } catch (_) {}
@@ -285,6 +326,7 @@ function connect() {
     setStatus('ok', 'connected');
     placeholderEl.style.display = 'none';
     fitScreen();
+    applyCanvasCentering();
   });
   rfb.addEventListener('disconnect', (e) => {
     connecting = false;
@@ -334,6 +376,7 @@ $('syncbtn').addEventListener('click', async () => {
 $('reconnectbtn').addEventListener('click', () => {
   disconnect();
   setTimeout(connect, 100);
+  setTimeout(fit, 1000);
 });
 
 // FAB
