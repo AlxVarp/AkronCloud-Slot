@@ -135,6 +135,12 @@ export class Mt5TcpServer {
   public onEvent?: (evt: ParsedEvent, account: AccountRow | undefined) => void;
   private host: string;
   private port: number;
+  // debug/ea-minimal: ring buffers surfaced via /debug/slotservice so
+  // the operator can see *what* came in over the wire without grepping
+  // log files. Bounded so a runaway publisher can't grow the heap.
+  private connectionLog: Array<{ at: number; event: 'connect' | 'disconnect' | 'replace'; peer: string | null }> = [];
+  private eventLog: Array<{ at: number; kind: string; bytes: number }> = [];
+  private static readonly LOG_MAX = 64;
 
   constructor(opts: StartMt5TcpOpts) {
     this.ledger = opts.ledger;
@@ -239,6 +245,34 @@ export class Mt5TcpServer {
     return !!this.sock && !this.sock.destroyed;
   }
 
+  /**
+   * Debug snapshot for /debug/slotservice. Returns everything an
+   * operator needs to figure out why the EA isn't talking to us
+   * without having to grep logs.
+   */
+  getDebugState(): {
+    bound: { host: string; port: number };
+    connected: boolean;
+    remoteAddress: string | null;
+    cmdClientConnected: boolean;
+    connections: Array<{ at: number; event: 'connect' | 'disconnect' | 'replace'; peer: string | null }>;
+    recentEvents: Array<{ at: number; kind: string; bytes: number }>;
+    pendingCommands: number;
+  } {
+    const peer = this.sock && !this.sock.destroyed
+      ? `${this.sock.remoteAddress ?? '?'}:${this.sock.remotePort ?? '?'}`
+      : null;
+    return {
+      bound: { host: this.host, port: this.port },
+      connected: !!this.sock && !this.sock.destroyed,
+      remoteAddress: peer,
+      cmdClientConnected: this.cmdClient?.isConnected() ?? false,
+      connections: [...this.connectionLog],
+      recentEvents: [...this.eventLog],
+      pendingCommands: this.pending.size,
+    };
+  }
+
   async stop(): Promise<void> {
     for (const [, p] of this.pending) {
       clearTimeout(p.timer);
@@ -252,14 +286,19 @@ export class Mt5TcpServer {
   }
 
   private handleConnection(sock: net.Socket): void {
+    const peer = `${sock.remoteAddress ?? '?'}:${sock.remotePort ?? '?'}`;
     if (this.sock) {
       log.warn('MT5 TCP: replacing existing connection');
+      this.connectionLog.push({ at: Date.now(), event: 'replace', peer });
+      this.trimLog(this.connectionLog);
       this.sock.destroy();
     }
     this.sock = sock;
     this.recvBuf = '';
     log.info({ remote: sock.remoteAddress, port: sock.remotePort },
              'MT5 TCP: connected');
+    this.connectionLog.push({ at: Date.now(), event: 'connect', peer });
+    this.trimLog(this.connectionLog);
 
     sock.on('data', (chunk: Buffer) => this.onData(chunk));
     sock.on('close', () => this.onClose());
@@ -293,6 +332,15 @@ export class Mt5TcpServer {
       return;
     }
     const f = result.data;
+    // debug/ea-minimal: ring-buffer for /debug/slotservice. We log
+    // *parsed* kinds only — schema-mismatch noise doesn't pollute the
+    // operator view, the schema-warn line above still goes to logs.
+    this.eventLog.push({
+      at: Date.now(),
+      kind: f.type === 'response' ? `response:${f.ok ? 'ok' : 'err'}` : f.kind,
+      bytes: JSON.stringify(frame).length,
+    });
+    this.trimLog(this.eventLog);
     if (f.type === 'response') {
       const p = this.pending.get(f.id);
       if (!p) {
@@ -382,11 +430,19 @@ export class Mt5TcpServer {
 
   private onClose(): void {
     log.warn('MT5 TCP: disconnected');
+    this.connectionLog.push({ at: Date.now(), event: 'disconnect', peer: null });
+    this.trimLog(this.connectionLog);
     this.sock = undefined;
     for (const [id, p] of this.pending) {
       clearTimeout(p.timer);
       p.resolve({ ok: false, error: 'mt5_disconnected' });
       this.pending.delete(id);
+    }
+  }
+
+  private trimLog<T>(arr: T[]): void {
+    if (arr.length > Mt5TcpServer.LOG_MAX) {
+      arr.splice(0, arr.length - Mt5TcpServer.LOG_MAX);
     }
   }
 }

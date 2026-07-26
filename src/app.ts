@@ -178,6 +178,11 @@ export async function buildApp(cfg: AppConfig): Promise<FastifyInstance> {
   await app.register(wsRoutes);
   await app.register(internalRoutes);
   await app.register(registerMobileRoutes);
+  // debug/ea-minimal: no-auth debug endpoints to inspect SlotService
+  // wiring (see api/debug.ts for the full surface). No effect on
+  // production behaviour — purely additive.
+  const { debugRoutes } = await import('./api/debug.js');
+  await app.register(debugRoutes({ tcp: mt5Tcp, cmdClient: mt5CmdClient }));
 
   // Login detector: watches MT5's window via xdotool, transitions
   // the slot to 'operational' on broker login, kills the VNC chain.

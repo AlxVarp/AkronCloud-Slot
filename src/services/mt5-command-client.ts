@@ -134,6 +134,17 @@ export class Mt5CommandClient {
     }
   }
 
+  /**
+   * Whether the outbound TCP client is currently connected to the
+   * MQL5 command port (default 127.0.0.1:7780). The client
+   * auto-reconnects on idle — operators want to see this flip from
+   * false→true in /debug/slotservice when SlotService.ex5 starts
+   * listening on 7780.
+   */
+  isConnected(): boolean {
+    return !!this.sock && !this.sock.destroyed;
+  }
+
   private connect(): void {
     if (this.destroyed) return;
     const s = net.createConnection({ host: this.host, port: this.port });
