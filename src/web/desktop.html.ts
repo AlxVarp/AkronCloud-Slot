@@ -349,7 +349,7 @@ function connect() {
   // Clear the target so RFB's wrapper div + canvas become the only
   // children of #screen. Without this, the placeholder div sits as
   // the first child and applyCanvasCentering() (which does
-  // `screenEl.querySelector('div')`) ends up styling the placeholder
+  // screenEl.querySelector('div')) ends up styling the placeholder
   // instead of RFB's wrapper — the canvas gets nested inside the
   // placeholder's flex container and is rendered at 0x0 or hidden
   // behind the placeholder's z-index:5 layer. /mobile does the same.
