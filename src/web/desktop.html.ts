@@ -1,30 +1,23 @@
 /**
  * /desktop — minimal desktop VNC wrapper for KasmVNC.
  *
- * debug/ea-minimal branch, v3. v1 added the prototype patches from
- * /mobile and the proven perf settings. v2 stripped the wrapper
- * down to canvas + status bar + reconnect. v3 (this) adds three
- * things we need to figure out whether clicks reach MT5:
+ * debug/ea-minimal branch, v4. v3 introduced three pieces of
+ * instrumentation (tabindex=0 + canvas.focus() on connect, cursor:none,
+ * click counters in the status bar). It failed at runtime with
+ *   "TypeError: rfb.getCanvas is not a function"
+ * because the KasmVNC RFB fork does NOT expose getCanvas() as a
+ * public method — the canvas is a private field (`this._canvas`,
+ * see rfb.js:254). Upstream noVNC exposes it; the fork doesn't.
+ * Mobile.html.ts has the same latent bug (uses `rfb?.getCanvas?.()`
+ * in the FAB click handler) but never trips it because nothing
+ * calls it until the user clicks the FAB.
  *
- *   1. tabindex="0" on the canvas + explicit .focus() on connect.
- *      Without this, the canvas (tabIndex=-1) is focusable but
- *      Chromium-based browsers won't route key events through it
- *      until something else (the mousedown → focusCanvas chain)
- *      primes focus — and on a brand-new RFB connection that
- *      priming hasn't happened yet.
- *
- *   2. cursor:none on the canvas. KasmVNC's bundled UI hides the
- *      browser cursor and draws its own via _cursor.js. Without
- *      this the user sees two cursors (their OS one + MT5's) which
- *      makes it look like "nothing responds" when in fact MT5 is
- *      receiving events just fine.
- *
- *   3. A click counter on the status bar that ticks every time the
- *      canvas's own mousedown listener fires AND every time the
- *      RFB client's _handleMouse runs. If the canvas counter ticks
- *      but the RFB counter doesn't, the event is reaching the DOM
- *      but not the RFB client. If both tick but MT5 doesn't react,
- *      the wire is broken further down.
+ * v4 replaces every `rfb.getCanvas()` with `screen.querySelector('canvas')`
+ * — the same selector we used in v0.4ag's `applyCanvasCentering`. The
+ * canvas is the only `<canvas>` element under `#screen` (RFB's
+ * constructor only creates one and we wipe `screen.innerHTML = ''`
+ * before attaching RFB), so a querySelector is unambiguous. We also
+ * add a small helper so the call sites stay readable.
  */
 export const DESKTOP_HTML = `<!DOCTYPE html>
 <html lang="en">
@@ -130,10 +123,19 @@ const clicksEl = document.getElementById('clicks');
 const rfbClicksEl = document.getElementById('rfbClicks');
 const lastEl = document.getElementById('last');
 
+// KasmVNC's RFB fork does not expose getCanvas(). The canvas is
+// always the only <canvas> under #screen (we wipe screen.innerHTML
+// before attaching RFB), so a querySelector is unambiguous. If RFB
+// is connected this returns its canvas; otherwise null.
+function getCanvas() {
+  return screen.querySelector('canvas');
+}
+
 let rfb = null;
 let connected = false;
 let canvasClicks = 0;
 let rfbClicks = 0;
+let countersWired = false;
 
 function setStatus(state, text) {
   dot.className = 'dot' + (state === 'ok' ? ' ok' : state === 'err' ? ' err' : '');
@@ -151,10 +153,12 @@ function getUrl() {
 function disconnect() {
   if (rfb) {
     try { rfb.disconnect(); } catch (_) {}
-    try { rfb.getCanvas()?.remove(); } catch (_) {}
+    const c = getCanvas();
+    if (c) try { c.remove(); } catch (_) {}
     rfb = null;
   }
   connected = false;
+  countersWired = false;
   setStatus('', 'disconnected');
 }
 
@@ -179,26 +183,19 @@ function connect() {
     connected = true;
     setStatus('ok', 'connected — refreshing…');
 
-    // Pin the canvas to fill #screen and pull its native cursor out
-    // of the way (KasmVNC draws its own cursor via _cursor.js — when
-    // the browser cursor is also visible the user sees a doubled
-    // cursor that makes clicks look unresponsive).
-    const canvas = rfb.getCanvas();
+    const canvas = getCanvas();
     if (canvas) {
       canvas.style.position = 'absolute';
       canvas.style.inset = '0';
       canvas.style.width = '100%';
       canvas.style.height = '100%';
       canvas.style.margin = '0';
+      // cursor:none because KasmVNC draws its own cursor inside the
+      // framebuffer; without this the user sees two cursors that drift
+      // out of sync and clicks look unresponsive even when MT5 is
+      // receiving the events fine.
       canvas.style.cursor = 'none';
       canvas.tabIndex = 0;
-      canvas.addEventListener('mousedown', () => {
-        canvasClicks++;
-        clicksEl.textContent = String(canvasClicks);
-      });
-      // Prime keyboard focus immediately — Chromium needs the canvas
-      // focused before it routes key events into _handleKey. Without
-      // this the first keystroke after connect is dropped.
       canvas.focus();
     }
 
@@ -208,36 +205,36 @@ function connect() {
         rfb._sock, false, 0, 0, rfb._fbWidth, rfb._fbHeight,
       );
     } catch (_) {}
+
     setTimeout(() => {
       // Re-pin focus after the framebuffer refresh settles — the
       // reattach cycle can drop it.
-      const c = rfb.getCanvas();
+      const c = getCanvas();
       if (c && document.activeElement !== c) c.focus();
       setStatus('ok', 'connected ' + rfb._fbWidth + 'x' + rfb._fbHeight);
     }, 350);
   });
 
-  // Wrap _handleMouse so we can count how many mouse events RFB
-  // actually received (regardless of whether they were forwarded
-  // to VNC). If canvasClicks ticks but rfbClicks doesn't, the
-  // browser is firing on the canvas but RFB's listener isn't
-  // catching it — usually a CSS overlay eating the events.
-  const _wrappedHandle = function (ev) {
-    rfbClicks++;
-    rfbClicksEl.textContent = String(rfbClicks);
-    lastEl.textContent = fmtLast(ev);
-  };
-  // Attach our own click listener on the same canvas AFTER RFB does
-  // (RFB's is added in its constructor). Since both fire on the
-  // same element, order only matters for which runs first, not
-  // whether both fire.
-  const wireCounters = () => {
-    const c = rfb && rfb.getCanvas();
-    if (!c || c.__countersWired) return;
-    c.addEventListener('mousedown', _wrappedHandle);
-    c.addEventListener('mouseup',   _wrappedHandle);
-    c.__countersWired = true;
-  };
+  // Wire the click counters once RFB has created its canvas (its
+  // constructor does so synchronously, so a microtask is enough).
+  function wireCounters() {
+    if (countersWired) return;
+    const c = getCanvas();
+    if (!c) return;
+    c.addEventListener('mousedown', () => {
+      canvasClicks++;
+      clicksEl.textContent = String(canvasClicks);
+    });
+    const onRfb = (ev) => {
+      rfbClicks++;
+      rfbClicksEl.textContent = String(rfbClicks);
+      lastEl.textContent = fmtLast(ev);
+    };
+    c.addEventListener('mousedown', onRfb);
+    c.addEventListener('mouseup',   onRfb);
+    countersWired = true;
+  }
+  queueMicrotask(wireCounters);
 
   rfb.addEventListener('disconnect', (e) => {
     connected = false;
@@ -245,13 +242,10 @@ function connect() {
     setStatus('err', 'disconnected' + why);
   });
 
-  // wireCounters after a microtask so RFB's constructor has added
-  // its listeners (it creates the canvas synchronously, so this is
-  // safe immediately; the defer is just paranoia).
-  queueMicrotask(wireCounters);
-
+  // Re-apply canvas styling on resize — KasmVNC occasionally
+  // re-inlines its own styles after the initial attach.
   const ro = new ResizeObserver(() => {
-    const c = rfb && rfb.getCanvas();
+    const c = getCanvas();
     if (!c) return;
     c.style.position = 'absolute';
     c.style.inset = '0';
@@ -271,7 +265,7 @@ document.getElementById('reconnect').addEventListener('click', () => {
 // keystrokes regardless of which element currently has focus.
 window.addEventListener('keydown', (ev) => {
   if (!connected || !rfb) return;
-  const c = rfb.getCanvas();
+  const c = getCanvas();
   if (c && document.activeElement !== c) c.focus();
 });
 
