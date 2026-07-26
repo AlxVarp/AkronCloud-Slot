@@ -395,7 +395,9 @@ a rebuild.
    stays alive — narrows the bug to the timer subsystem.
 4. **Add Print() to `OnTimer`** to see if it's firing after the
    service is "started" — confirms the service thread is still
-   alive in the wine process.
+   alive in the wine process. **DONE in commit `8d461ab`**:
+   sentinel prints every 5s with `g_cmdSock` and `g_cmdClients`
+   size. User must recompile + push new .ex5 to test.
 5. **Workaround: implement fake-order mode in the slot** so we can
    test the cerebro end-to-end without SlotService.
 6. **Long-term: file-based order queue** via a chart script polling
@@ -404,4 +406,4 @@ a rebuild.
 
 ---
 
-*Last updated: 2026-07-26 end-of-session, debug/desktop-minimal @ 275dbe9*
+*Last updated: 2026-07-26 end-of-session, debug/desktop-minimal @ 8d461ab*
