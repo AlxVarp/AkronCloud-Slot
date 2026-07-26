@@ -1,7 +1,7 @@
 //+------------------------------------------------------------------+
 //| SlotService.mq5 - service that bridges the slot with MT5 via TCP |
 //|             (Phase C / Ruta B1 — replaces file-bridge stack)    |
-//|                       v2.11 — split commands port                 |
+//|                       v2.12 — no blocking Alert()                 |
 //+------------------------------------------------------------------+
 //
 // Runs as a #property service, launched by MT5 at terminal startup
@@ -36,7 +36,7 @@
 //
 //+------------------------------------------------------------------+
 #property copyright "akroncloud-slot"
-#property version   "2.11"
+#property version   "2.12"
 #property service
 #property strict  false
 
@@ -108,13 +108,23 @@ string g_cmdClientBufs[];
 
 int OnStart()
 {
-   // DEBUG-INSTRUMENTED 2026-07-24 — to confirm OnStart actually runs
-   // and that StartCommandServer gets called. If you see this print in
-   // MT5's Experts tab or MQL5/Logs, my code IS being executed.
-   PrintFormat("DEBUG-ONSTART v2.11b build=%s services=0 cmd_port=%d", __DATETIME__, CmdWebSocketPort);
-   Alert("SlotService started v2.11b", "build " + __DATETIME__);
+   // v2.12: Alert() in OnStart blocks the MQL5 thread on a modal
+   // dialog. In Xvnc build 5836 + wine 11.0 the modal is sometimes
+   // auto-dismissed by MT5 with no user click, which exits the
+   // service cleanly (result code 0) before WSAStartup / ConnectToSlot
+   // ever run — exactly the symptom we hit on 2026-07-26 where
+   // 'service SlotService started' / 'stopped (result code 0)' were
+   // logged 56ms apart. Replaced Alert() with Print() so the start
+   // log appears in the Experts tab without blocking.
+   //
+   // Same for the DEBUG-INSTRUMENTED PrintFormat: kept as a single
+   // start marker so we can confirm from /v1/sync that the service
+   // actually ran OnStart. If you don't see this line in Experts,
+   // the service did NOT start — check services.ini + the
+   // AllowServices registry key.
+   PrintFormat("SlotService: v2.12 start build=%s _Symbol=%s poll=%ds cmd_ws=%d",
+               __DATETIME__, _Symbol, PollSeconds, CmdWebSocketPort);
 
-   PrintFormat("SlotService: start on %s poll=%ds cmd_ws=%d", _Symbol, PollSeconds, CmdWebSocketPort);
    uchar wsadata[408];
    int rc = WSAStartup(0x0202, wsadata);
    if(rc != 0) { Print("SlotService: WSAStartup failed"); return INIT_FAILED; }
