@@ -402,7 +402,25 @@ function connect() {
     }
     fitScreen();
   });
+  // Perf settings — match /mobile. Without these, the RFB client uses
+  // its defaults (no compression, no JPEG, full-frame Raw encoding on
+  // every update), which on a 1024x768 desktop is ~4.3x more bytes
+  // per frame than /mobile's 414x440 and very visibly laggy.
+  //
+  // resizeSession=false: don't send SetDesktopSize on viewport
+  // changes (Xvnc doesn't honor it anyway, and sending it costs a
+  // round-trip on every browser resize).
+  // qualityLevel=6: 0=worst/biggest, 9=best/smallest. 6 is a good
+  // middle for the candle charts (text stays readable, gradients
+  // don't band visibly).
+  // compressionLevel=2: 0=off, 9=highest. KasmVNC already does Tight
+  // zlib but its level is hardcoded; bumping this also tells the
+  // client to prefer zrle/tight over raw rectangles, which is the
+  // bulk of the savings for static chart backgrounds.
+  rfb.resizeSession = false;
   rfb.scaleViewport = false; // we do our own letterboxed fit
+  rfb.qualityLevel = 6;
+  rfb.compressionLevel = 2;
 }
 
 window.addEventListener('resize', fitScreen);
