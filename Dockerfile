@@ -212,11 +212,19 @@ printf '%s' "$KASMVNC_PASSWORD" | vncpasswd -f > /etc/kasmvnc/passwd
 chmod 600 /etc/kasmvnc/passwd
 # KasmVNC's HTTP BasicAuth uses a SEPARATE multi-user password file
 # at ${HOME}/.kasmpasswd (per kasmvnc_defaults.yaml:server.advanced).
-# The format is `username:hashed_password` (htpasswd-style). Use the
-# kasmvncpasswd utility (not vncpasswd) to generate it correctly.
-# The username is the abc account that runs the Xvnc process.
+# The format is `username:hashed_password[:permissions]` where
+# permissions is a subset of "rwo" (read / write / owner). The default
+# when kasmvncpasswd is invoked WITHOUT -r/-w/-o is "no permissions" —
+# the user authenticates successfully via BasicAuth, the WS upgrade
+# is accepted, then VNCSConnST logs "User abc has no read permissions"
+# and Xvnc closes the connection without sending any FramebufferUpdate.
+# Without the explicit password_file positional arg, kasmvncpasswd exits
+# 0 without writing anything (we verified: file stays at 57 bytes and
+# only contains the hash, no `:rwo` suffix). Both missing pieces are
+# fixed here.
 KASMVNC_USERNAME="${KASMVNC_USERNAME:-abc}"
-printf '%s\n%s\n' "$KASMVNC_PASSWORD" "$KASMVNC_PASSWORD" | kasmvncpasswd -u "$KASMVNC_USERNAME"
+printf '%s\n%s\n' "$KASMVNC_PASSWORD" "$KASMVNC_PASSWORD" \
+  | kasmvncpasswd -u "$KASMVNC_USERNAME" -r -w /config/.kasmpasswd
 chmod 600 /config/.kasmpasswd
 # Both files must be owned by abc (the user that s6-setuidgid drops
 # to before exec'ing Xvnc). kasmvncpasswd writes the file as root;
