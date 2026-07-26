@@ -190,6 +190,7 @@ export const DESKTOP_HTML = `<!DOCTYPE html>
 
 <script type="module">
 const { default: RFB } = await import('/vnc-static/core/rfb.js');
+const { default: MouseButtonMapper } = await import('/vnc-static/core/mousebuttonmapper.js');
 
 // Bundle-without-UI prototype shims. The /mobile wrapper does the
 // same thing — keep these in sync if you change either.
@@ -197,6 +198,40 @@ if (!RFB.prototype.ui) RFB.prototype.ui = {};
 if (typeof RFB.prototype.ui.hookConnectCallback !== 'function') {
   RFB.prototype.ui.hookConnectCallback = function() {};
 }
+
+// Drain the KasmVNC fork's UnixRelaySub message (msgType 140) instead
+// of letting the default _handleSubscribeUnixRelay explode with
+// "Cannot read property rQshift8 of null" on the first socket error.
+// Same drain semantics as _rQwait/_rQshiftStr so the message
+// dispatcher stays in sync. Ported from mobile.html.ts — without
+// this, the very first message can desync the WS receive queue and
+// leave the framebuffer broken.
+const _origHandleSubscribeUnixRelay = RFB.prototype._handleSubscribeUnixRelay;
+RFB.prototype._handleSubscribeUnixRelay = function () {
+  if (!this._sock) return false;
+  if (this._sock.rQwait('UnixRelaySub header', 2, 1)) return false;
+  const status = this._sock.rQshift8();
+  const len = this._sock.rQshift8();
+  if (this._sock.rQwait('UnixRelaySub payload', len, 3)) return false;
+  this._sock.rQshiftStr(len);
+  return false;
+};
+RFB.prototype._origHandleSubscribeUnixRelay = _origHandleSubscribeUnixRelay;
+
+// Lazy-init the mouseButtonMapper that the bundled UI normally assigns
+// in ui.js. Without this, the first mouse event on the canvas throws
+// "Cannot read property 'get' of null" inside the RFB _handleMouse
+// path, which kills the framebuffer update pipeline. Same fix as
+// mobile.html.ts.
+const _origHandleMouse = RFB.prototype._handleMouse;
+RFB.prototype._handleMouse = function (ev) {
+  if (!this.mouseButtonMapper) {
+    const m = new MouseButtonMapper();
+    m.set(0, 1); m.set(1, 2); m.set(2, 3); m.set(3, 8); m.set(4, 9);
+    this.mouseButtonMapper = m;
+  }
+  return _origHandleMouse.call(this, ev);
+};
 
 const TARGET_W = 1024;
 const TARGET_H = 768;
@@ -311,6 +346,15 @@ function connect() {
   setStatus('', 'connecting…');
   placeholderEl.textContent = 'Connecting to KasmVNC…';
 
+  // Clear the target so RFB's wrapper div + canvas become the only
+  // children of #screen. Without this, the placeholder div sits as
+  // the first child and applyCanvasCentering() (which does
+  // `screenEl.querySelector('div')`) ends up styling the placeholder
+  // instead of RFB's wrapper — the canvas gets nested inside the
+  // placeholder's flex container and is rendered at 0x0 or hidden
+  // behind the placeholder's z-index:5 layer. /mobile does the same.
+  screenEl.innerHTML = '';
+
   const url = getUrl();
   // Same KasmVNC RFB signature as /mobile: 3rd positional is the URL.
   // The /mobile wrapper passes null as the 2nd (touchInput). We do
@@ -326,7 +370,15 @@ function connect() {
     setStatus('ok', 'connected');
     placeholderEl.style.display = 'none';
     fitScreen();
-    applyCanvasCentering();
+    // fit() (defined below) calls applyCanvasCentering() + sends a
+    // non-incremental FramebufferUpdateRequest to KasmVNC. KasmVNC
+    // does NOT push a fresh framebuffer update on its own after the
+    // RFB handshake — without this request the canvas stays black
+    // even though the connection is live. This is the same fix
+    // /mobile uses; the previous desktop wrapper only called
+    // fitScreen() in the connect listener, which sizes the canvas
+    // but never asks the server for pixels.
+    fit();
   });
   rfb.addEventListener('disconnect', (e) => {
     connecting = false;
