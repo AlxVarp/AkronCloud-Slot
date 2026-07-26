@@ -188,6 +188,31 @@ void OnTimer()
    // port (7779). OnTimer now just keeps the events TCP alive,
    // polls the command server, and pushes state snapshots.
 
+   // v2.13 (debug): sentinel print every ~5s. The death-after-5s
+   // bug (see docs/sessions/2026-07-26-slotservice-v2.12-
+   // investigation.md) might be:
+   //  (a) OnTimer never fires after the service is "started" — this
+   //      print would not appear past the start. If it stops, the
+   //      wine/MQL5 host stopped calling our OnTimer (likely killed
+   //      the MQL5 service thread even though the wineserver still
+   //      has the LISTEN socket)
+   //  (b) OnTimer fires but PollCommandServer never gets a new
+   //      connection — would indicate wine's accept() is broken
+   //  (c) OnTimer fires, PollCommandServer runs, but recv() returns
+   //      0 and the service exits cleanly — the Print on the next
+   //      line would not appear
+   // If after 10s of running this print stops appearing in Experts,
+   // the service thread is dead even though the kernel still has
+   // port 7780 LISTEN. That proves the wine/MT5 service framework
+   // killed the MQL5 thread, not the slot or the network.
+   static datetime g_lastTimerPrint = 0;
+   if(TimeCurrent() - g_lastTimerPrint >= 5) {
+      g_lastTimerPrint = TimeCurrent();
+      PrintFormat("SlotService: OnTimer tick t=%s g_cmdSock=%d g_cmdClients=%d",
+                  TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS),
+                  g_cmdSock, ArraySize(g_cmdClients));
+   }
+
    if(g_cmdSock == INVALID_SOCKET) {
       ConnectToSlot();
       if(g_cmdSock == INVALID_SOCKET) return;
