@@ -110,7 +110,7 @@ export type CommandResult = {
 
 export type StartMt5TcpOpts = {
   ledger: Ledger;
-  resolveAccount: (brokerLogin: string) => AccountRow | undefined;
+  resolveAccount: (brokerLogin: string, brokerServer?: string) => AccountRow | undefined;
   onEvent?: (evt: ParsedEvent, account: AccountRow | undefined) => void;
   host?: string;
   port?: number;
@@ -131,7 +131,7 @@ export class Mt5TcpServer {
   // v2.11: dedicated outbound command client (SlotService listens on 7779).
   private cmdClient?: import('./mt5-command-client.js').Mt5CommandClient;
   private ledger: Ledger;
-  private resolveAccount: (brokerLogin: string) => AccountRow | undefined;
+  private resolveAccount: (brokerLogin: string, brokerServer?: string) => AccountRow | undefined;
   public onEvent?: (evt: ParsedEvent, account: AccountRow | undefined) => void;
   private host: string;
   private port: number;
@@ -372,8 +372,10 @@ export class Mt5TcpServer {
     // first active account. This keeps v54 working unchanged while
     // letting v55 be explicit about which account it's reporting on.
     const payloadLogin = (evt.data as { login?: string | number } | undefined)?.login;
+    const payloadServer = (evt.data as { server?: string } | undefined)?.server;
     const account = this.resolveAccount(
       payloadLogin !== undefined ? String(payloadLogin) : '',
+      typeof payloadServer === 'string' ? payloadServer : undefined,
     );
     if (!account) {
       log.warn({ kind: evt.kind }, 'MT5 TCP: no account resolved');

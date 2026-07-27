@@ -16,6 +16,7 @@ import { ProblemError, type Problem, CODE_TO_STATUS, type ProblemCode } from './
 import type { BrokerConnector } from './connectors/base.js';
 import { makeConnector } from './connectors/index.js';
 import { makeLedger, type Ledger } from './ledger.js';
+import { randomUUID } from 'node:crypto';
 
 /**
  * Lightweight dependency container shared by routes + workers.
@@ -64,7 +65,7 @@ export async function buildApp(cfg: AppConfig): Promise<FastifyInstance> {
   const mt5CmdClient = new Mt5CommandClient();
   const mt5Tcp = await startMt5TcpServer({
     ledger,
-    resolveAccount: (brokerLogin) => {
+    resolveAccount: (brokerLogin, brokerServer) => {
       // (body unchanged — see below)
       // Phase A: single-account slot. Two fallback levels:
       //
@@ -92,6 +93,42 @@ export async function buildApp(cfg: AppConfig): Promise<FastifyInstance> {
           )
           .get(brokerLogin) as AccountRow | undefined;
         if (exact) return exact;
+
+        // A freshly created desktop slot has no API-side account yet: the
+        // user logs into MT5 first, then the local publisher reports the
+        // broker login.  Register that real account here so the very same
+        // event is not dropped and REST can be used immediately afterwards.
+        // This is intentionally limited to the configured MT5 connector and
+        // to a concrete server/login pair; incomplete legacy events keep the
+        // normal single-account fallback below.
+        if (cfg.connectorId === 'mt5' && brokerServer && /^\d+$/.test(brokerLogin)) {
+          const now = Date.now();
+          const credentials = Buffer.from(JSON.stringify({
+            server: brokerServer,
+            login: brokerLogin,
+            // MT5 is already authenticated interactively.  No broker
+            // password is collected or persisted by the desktop slot.
+            password: '',
+          }), 'utf8');
+          const row: AccountRow = {
+            id: randomUUID(),
+            tenant_id: cfg.tenantId,
+            slot_id: cfg.slotId,
+            broker: 'mt5',
+            broker_server: brokerServer,
+            broker_login: brokerLogin,
+            encrypted_creds: encrypt(cfg.encryptionKey, cfg.tenantId, credentials).packed,
+            status: 'active',
+            last_validation_ts: now,
+            last_error: null,
+            created_at: now,
+            updated_at: now,
+          };
+          accountsRepo(db).insert(row);
+          log.info({ account: row.id, login: brokerLogin, server: brokerServer },
+            'registered MT5 account from local desktop login');
+          return row;
+        }
       }
       return db
         .prepare(

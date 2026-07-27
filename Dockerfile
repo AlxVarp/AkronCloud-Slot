@@ -54,10 +54,13 @@ COPY --from=build /app/dist ./dist
 # State DB lives here by default; mount as a volume in compose.
 RUN mkdir -p /var/lib/akron-slot
 
+# The desktop image ships MT5 plus the local TCP command bridge. Keep the
+# API on MT5; config's development default (`sim`) hides a real MT5 login.
 ENV NODE_ENV=production \
     SLOT_STATE_DB=/var/lib/akron-slot/state.db \
     SLOT_BIND=0.0.0.0 \
-    SLOT_PORT=7777
+    SLOT_PORT=7777 \
+    SLOT_CONNECTOR=mt5
 # Intentionally do NOT prepend /opt/node20/bin to PATH — the KasmVNC
 # services (svc-kclient, svc-nginx) invoke `node` and depend on the
 # v18 ABI of their native modules. We let the base image keep its

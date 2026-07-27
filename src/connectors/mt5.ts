@@ -722,7 +722,22 @@ export class Mt5Connector implements BrokerConnector {
       log.warn({ kind: evt.kind, evt }, 'mt5 TCP: no account registered');
       return;
     }
-    const rec = this.accounts.get(ref);
+    // The desktop-login bootstrap creates the DB row from the first local
+    // publisher event.  There is no preceding REST connect() in that flow,
+    // so materialise the in-memory record lazily instead of dropping the
+    // event that carries the actual balance/login state.
+    let rec = this.accounts.get(ref);
+    if (!rec && resolvedAccount) {
+      rec = {
+        ref,
+        broker_server: resolvedAccount.broker_server,
+        broker_login: resolvedAccount.broker_login,
+        loggedIn: false,
+        balance: 0,
+        equity: 0,
+      };
+      this.accounts.set(ref, rec);
+    }
 
     if (evt.kind === 'fill') {
       const fill: Fill = {
