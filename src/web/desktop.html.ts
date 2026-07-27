@@ -23,7 +23,7 @@ export const DESKTOP_HTML = `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=1024, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#000" />
   <title>akroncloud-slot · desktop VNC</title>
   <style>
@@ -48,9 +48,8 @@ export const DESKTOP_HTML = `<!DOCTYPE html>
     #screen > canvas { display: block; }
 
     #bar {
-      display: none;
+      display: none !important;
       flex-shrink: 0;
-      display: flex; align-items: center; gap: 8px;
       height: 32px;
       padding: 0 10px;
       background: #161b22;
@@ -199,11 +198,6 @@ function connect() {
 
     const canvas = getCanvas();
     if (canvas) {
-      canvas.style.position = 'absolute';
-      canvas.style.inset = '0';
-      canvas.style.width = '100%';
-      canvas.style.height = '100%';
-      canvas.style.margin = '0';
       // cursor:none because KasmVNC draws its own cursor inside the
       // framebuffer; without this the user sees two cursors that drift
       // out of sync and clicks look unresponsive even when MT5 is
@@ -256,17 +250,10 @@ function connect() {
     setStatus('err', 'disconnected' + why);
   });
 
-  // Re-apply canvas styling on resize — KasmVNC occasionally
-  // re-inlines its own styles after the initial attach.
+  // Let RFB own canvas dimensions. Forcing 100% width and height stretches
+  // the framebuffer on a phone and makes touch coordinates drift.
   const ro = new ResizeObserver(() => {
-    const c = getCanvas();
-    if (!c) return;
-    c.style.position = 'absolute';
-    c.style.inset = '0';
-    c.style.width = '100%';
-    c.style.height = '100%';
-    c.style.margin = '0';
-    c.style.cursor = 'none';
+    try { rfb?._updateScale(); } catch (_) {}
   });
   ro.observe(screen);
 }
