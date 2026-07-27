@@ -246,7 +246,6 @@ exec s6-setuidgid abc \
     -PasswordFile /etc/kasmvnc/passwd \
     -KasmPasswordFile /config/.kasmpasswd \
     -SecurityTypes None \
-    -AlwaysShared \
     -http-header Cross-Origin-Embedder-Policy=require-corp \
     -http-header Cross-Origin-Opener-Policy=same-origin \
     -geometry 1024x768 \
