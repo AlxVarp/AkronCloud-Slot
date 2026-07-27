@@ -10,7 +10,7 @@ login:
 1. MT5 login is detected and creates the API account automatically.
 2. REST commands use the independent Python/MT5 command bridge on port 7780.
 3. The desktop container is healthy without a persisted host volume.
-4. AutoTrading is guarded after login instead of requiring a user click.
+4. AutoTrading is an explicit MT5 user setting; the container does not change it.
 5. Completed executions are emitted as slot events so they can be consumed as
    a signal source by the WebSocket and ledger paths.
 
@@ -76,7 +76,12 @@ Observed validation account:
 | Command port | `127.0.0.1:7780`, listening |
 | Final positions | 0 |
 
-## AutoTrading guard
+## AutoTrading guard (removed)
+
+This behavior was removed because UI automation can interfere with the
+interactive MT5 login flow. The image no longer copies or starts
+`ensure-autotrading.sh`; the notes below are retained only as historical
+investigation context.
 
 MT5 build 5836 stores its interactive AutoTrading preference in the user
 profile. It may reset that preference during the first broker login even when
@@ -179,7 +184,11 @@ event-socket connection. This avoids a connection-replacement race in the
 single-producer TCP event server, so downstream WebSocket consumers can use
 the slot as an execution-signal source.
 
-## AutoTrading recovery
+## AutoTrading recovery (removed)
+
+The `svc-mt5-autotrading-guard` service is no longer part of the image. MT5
+login is now left entirely to the user; enable AutoTrading manually only when
+you are ready to trade.
 
 The image starts `svc-mt5-autotrading-guard` after the desktop service. It
 checks MT5's authoritative `terminal_info().trade_allowed` flag every 20
