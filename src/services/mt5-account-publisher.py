@@ -48,7 +48,9 @@ import logging
 import os
 import signal
 import socket
+import socketserver
 import sys
+import threading
 import time
 from typing import Any, Optional
 
@@ -78,6 +80,8 @@ SLOT_PORT = int(os.environ.get("SLOT_MT5_TCP_PORT", "7778"))
 POLL_SECS = float(os.environ.get("MT5_ACCOUNT_POLL_SECS", "1.5"))
 INIT_RETRY_SECS = float(os.environ.get("MT5_INIT_RETRY_SECS", "5.0"))
 INIT_TIMEOUT_SECS = float(os.environ.get("MT5_INIT_TIMEOUT_SECS", "60.0"))
+COMMAND_HOST = os.environ.get("SLOT_MT5_CMD_BIND", "127.0.0.1")
+COMMAND_PORT = int(os.environ.get("SLOT_MT5_CMD_PORT", "7780"))
 
 # After this many consecutive `mt5.account_info() → None` polls, the
 # publisher assumes the IPC connection silently died (MT5 broker
@@ -91,6 +95,123 @@ MAX_NONE_STREAK = int(os.environ.get("MT5_MAX_NONE_STREAK", "10"))
 _stop = False
 _mt5_ready = False
 _none_streak = 0
+
+
+def command_result(action: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Execute the SlotService command wire protocol through MT5's Python API.
+
+    MT5 build 5836 under Wine does not reliably auto-start MQL5 Services.
+    Keeping this endpoint alongside the already-running publisher makes the
+    command channel independent of the MQL5 service lifecycle.
+    """
+    if not HAS_MT5 or not _mt5_ready:
+        raise RuntimeError("mt5_not_ready")
+
+    if action == "account":
+        info = mt5.account_info()
+        if info is None:
+            raise RuntimeError("account_unavailable")
+        fields = ("login", "server", "currency", "name", "company", "leverage",
+                  "trade_allowed", "balance", "equity", "margin", "margin_free",
+                  "margin_level", "profit")
+        return {key: getattr(info, key, None) for key in fields}
+
+    if action == "positions":
+        positions = mt5.positions_get() or ()
+        return {"count": len(positions), "positions": [p._asdict() for p in positions]}
+
+    if action == "orders":
+        orders = mt5.orders_get() or ()
+        return {"count": len(orders), "orders": [o._asdict() for o in orders]}
+
+    if action in ("quote", "symbol"):
+        symbol = str(payload.get("symbol") or payload.get("instrument") or "")
+        if not symbol:
+            raise RuntimeError("missing_symbol")
+        mt5.symbol_select(symbol, True)
+        info = mt5.symbol_info(symbol)
+        tick = mt5.symbol_info_tick(symbol)
+        if info is None:
+            raise RuntimeError("symbol_not_found")
+        result = info._asdict()
+        if tick is not None:
+            result.update(tick._asdict())
+        return result
+
+    if action == "symbols":
+        pattern = str(payload.get("pattern") or "").lower()
+        symbols = mt5.symbols_get() or ()
+        names = [s.name for s in symbols if not pattern or pattern in s.name.lower()]
+        return {"count": len(names), "symbols": names}
+
+    if action == "history":
+        end = float(payload.get("to") or time.time())
+        start = float(payload.get("from") or (end - 86400))
+        deals = mt5.history_deals_get(start, end) or ()
+        limit = min(max(int(payload.get("limit") or 500), 1), 5000)
+        return {"count": min(len(deals), limit), "history": [d._asdict() for d in deals[-limit:]]}
+
+    if action == "open":
+        symbol = str(payload.get("symbol") or payload.get("instrument") or "")
+        side = str(payload.get("side") or "").lower()
+        volume = float(payload.get("volume") or 0)
+        if not symbol or side not in ("buy", "sell") or volume <= 0:
+            raise RuntimeError("invalid_open_payload")
+        if not mt5.symbol_select(symbol, True):
+            raise RuntimeError("symbol_select_failed")
+        tick = mt5.symbol_info_tick(symbol)
+        if tick is None:
+            raise RuntimeError("quote_unavailable")
+        request = {"action": mt5.TRADE_ACTION_DEAL, "symbol": symbol, "volume": volume,
+                   "type": mt5.ORDER_TYPE_BUY if side == "buy" else mt5.ORDER_TYPE_SELL,
+                   "price": tick.ask if side == "buy" else tick.bid,
+                   "deviation": int(payload.get("deviation") or 10),
+                   "sl": float(payload.get("sl") or 0), "tp": float(payload.get("tp") or 0),
+                   "comment": str(payload.get("comment") or "akroncloud")}
+        result = mt5.order_send(request)
+        if result is None or getattr(result, "retcode", 0) not in (mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED):
+            raise RuntimeError("order_send_failed")
+        return {"order_id": str(result.order), "broker_order_id": str(result.order), "deal": str(result.deal)}
+
+    if action == "cancel":
+        ticket = int(payload.get("order_id") or payload.get("ticket") or 0)
+        result = mt5.order_send({"action": mt5.TRADE_ACTION_REMOVE, "order": ticket})
+        if result is None or getattr(result, "retcode", 0) != mt5.TRADE_RETCODE_DONE:
+            raise RuntimeError("cancel_failed")
+        return {"canceled": str(ticket)}
+
+    raise RuntimeError("unsupported_action:" + action)
+
+
+class CommandHandler(socketserver.StreamRequestHandler):
+    def handle(self) -> None:
+        for raw in self.rfile:
+            try:
+                request = json.loads(raw.decode("utf-8"))
+                if request.get("type") != "command":
+                    continue
+                response: dict[str, Any] = {"type": "response", "id": request.get("id")}
+                try:
+                    response.update(ok=True, result=command_result(str(request.get("action") or ""), request.get("payload") or {}))
+                except Exception as exc:
+                    log.warning("command %s failed: %s", request.get("action"), exc)
+                    response.update(ok=False, error=str(exc))
+                self.wfile.write((json.dumps(response, separators=(",", ":"), default=str) + "\n").encode("utf-8"))
+                self.wfile.flush()
+            except Exception as exc:
+                log.warning("invalid command frame: %s", exc)
+
+
+class CommandServer(socketserver.ThreadingTCPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+
+
+def start_command_server() -> CommandServer:
+    server = CommandServer((COMMAND_HOST, COMMAND_PORT), CommandHandler)
+    threading.Thread(target=server.serve_forever, name="mt5-command-server", daemon=True).start()
+    log.info("MT5 Python command server listening on %s:%d", COMMAND_HOST, COMMAND_PORT)
+    return server
 
 
 def _on_signal(signum, _frame):
@@ -174,7 +295,10 @@ def try_init_mt5() -> bool:
     if not HAS_MT5:
         return False
     try:
-        ok = mt5.initialize()
+        # The MetaTrader5 extension holds Python's GIL while waiting for
+        # Wine IPC. Bound the wait so the command-server thread can still
+        # return `mt5_not_ready` instead of making TCP clients time out.
+        ok = mt5.initialize(timeout=5000)
         if ok:
             log.info("mt5.initialize() ok — terminal: %s", mt5.terminal_info())
             return True
@@ -203,6 +327,7 @@ def loop() -> int:
         log.error("MetaTrader5 not importable: %s", IMPORT_ERROR)
         log.error("publisher will run in heartbeat-only mode")
 
+    command_server = start_command_server()
     client = SlotClient(SLOT_HOST, SLOT_PORT)
     last_sent: Optional[dict[str, Any]] = None
     init_started_at = time.monotonic()
@@ -321,6 +446,8 @@ def loop() -> int:
             time.sleep(min(0.2, POLL_SECS - slept))
             slept += 0.2
 
+    command_server.shutdown()
+    command_server.server_close()
     client.close()
     log.info("publisher loop exited cleanly")
     return 0

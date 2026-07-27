@@ -51,7 +51,10 @@
    int  send(int s, const uchar &buf[], int len, int flags);
    int  recv(int s, uchar &buf[], int len, int flags);
    int  closesocket(int s);
-   int  ioctlsocket(int s, long cmd, uchar &argp[]);
+   // Winsock declares this as u_long ioctlsocket(SOCKET, long, u_long *).
+   // Keep both values explicitly 32-bit: MQL5's `long` is 64-bit and an
+   // uchar array is not a reliable pointer representation under Wine.
+   int  ioctlsocket(int s, uint cmd, uint &argp);
    int  WSAGetLastError();
    int  bind(int s, uchar &name[], int namelen);
    int  listen(int s, int backlog);
@@ -969,9 +972,7 @@ void StartCommandServer()
       closesocket(s);
       return;
    }
-   uchar nonblocking[4];
-   ArrayInitialize(nonblocking, 0);
-   nonblocking[0] = 1;
+   uint nonblocking = 1;
    if(ioctlsocket(s, FIONBIO, nonblocking) == SOCKET_ERROR) {
       PrintFormat("SlotService: cmd ioctlsocket(FIONBIO) err=%d", WSAGetLastError());
       closesocket(s);
@@ -1020,9 +1021,7 @@ void PollCommandServer()
       ArrayResize(g_cmdClientBufs, idx + 1);
       g_cmdClients[idx] = cli;
       g_cmdClientBufs[idx] = "";
-      uchar nonblocking[4];
-      ArrayInitialize(nonblocking, 0);
-      nonblocking[0] = 1;
+      uint nonblocking = 1;
       if(ioctlsocket(cli, FIONBIO, nonblocking) == SOCKET_ERROR) {
          PrintFormat("SlotService: cmd client nonblocking err=%d", WSAGetLastError());
          closesocket(cli);
