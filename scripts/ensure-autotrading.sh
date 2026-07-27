@@ -2,9 +2,9 @@
 # Enable MT5 AutoTrading only after a broker session is fully established.
 #
 # MT5 build 5836 can reset this interactive preference when the broker profile
-# is created.  Running UI automation while the login wizard is open steals
-# focus, so this guard first requires a real account_info() response and a
-# quiet MT5 main window.  It never places an order.
+# is created. Running UI automation while the login wizard is open steals
+# focus, so this guard waits for the logged-in terminal title and a quiet main
+# window. It never places an order.
 set -u
 
 LOG=/var/log/ensure-autotrading.log
@@ -13,19 +13,15 @@ PY=/config/.wine/drive_c/Python39/python.exe
 
 log() { printf '[%s] %s\n' "$(date -Iseconds)" "$*" >> "$LOG"; }
 
-runtime_state() {
-  s6-setuidgid abc env WINEPREFIX=/config/.wine WINEDEBUG=-all HOME=/config \
-    XDG_RUNTIME_DIR=/config/.XDG DISPLAY=:0 PYTHONHASHSEED=0 \
-    "$WINE" "$PY" -c \
-    'import MetaTrader5 as m; ok=m.initialize(timeout=3000); t=m.terminal_info() if ok else None; a=m.account_info() if ok else None; print("1" if t and a and t.connected and t.trade_allowed else "0", "1" if a else "0")' \
-    2>/dev/null | tail -n 1 | tr -d '\r' || true
-}
-
-terminal_is_idle() {
-  local active main
+logged_in_terminal() {
+  local active main title
   active=$(s6-setuidgid abc env DISPLAY=:0 xdotool getactivewindow 2>/dev/null || true)
   main=$(s6-setuidgid abc env DISPLAY=:0 xdotool search --name 'MetaTrader 5' 2>/dev/null | tail -n 1 || true)
-  [[ -n "$active" && "$active" == "$main" ]]
+  [[ -n "$active" && "$active" == "$main" ]] || return 1
+  title=$(s6-setuidgid abc env DISPLAY=:0 xdotool getwindowname "$main" 2>/dev/null || true)
+  # Before broker login MT5's title begins with its product name. A connected
+  # broker title begins with the account number, e.g. "12345 - Deriv-Demo".
+  [[ "$title" =~ ^[0-9]+[[:space:]]- ]]
 }
 
 enable_with_ui() {
@@ -49,17 +45,19 @@ enable_with_ui() {
   s6-setuidgid abc env DISPLAY=:0 xdotool mousemove "$((X + WIDTH - 207))" "$((Y + HEIGHT - 18))" click 1
 }
 
+last_title=''
 log 'post-login AutoTrading guard started'
 while true; do
-  read -r enabled account <<<"$(runtime_state)"
-  if [[ "$enabled" == 1 ]]; then sleep 20; continue; fi
-  # Never manipulate MT5 before an account exists or while a dialog owns
-  # focus; this is the key difference from the old pre-login guard.
-  if [[ "$account" == 1 ]] && terminal_is_idle; then
-    if enable_with_ui; then
-      sleep 3
-      read -r enabled _ <<<"$(runtime_state)"
-      [[ "$enabled" == 1 ]] && log 'AutoTrading enabled after broker login' || log 'AutoTrading UI attempt did not take; retrying later'
+  if logged_in_terminal; then
+    title=$(s6-setuidgid abc env DISPLAY=:0 xdotool getwindowname "$(s6-setuidgid abc env DISPLAY=:0 xdotool getactivewindow)" 2>/dev/null || true)
+    # One attempt per newly authenticated account; avoid interfering with an
+    # already operational desktop or repeatedly opening Options on failure.
+    if [[ "$title" != "$last_title" ]]; then
+      sleep 8
+      if logged_in_terminal && enable_with_ui; then
+        log "AutoTrading enable UI submitted for $title"
+      fi
+      last_title="$title"
     fi
   fi
   sleep 15
