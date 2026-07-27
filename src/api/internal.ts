@@ -34,10 +34,22 @@ export async function internalRoutes(app: FastifyInstance): Promise<void> {
   app.get('/internal/operational', async (req) => {
     const deps = (req.server as unknown as { deps: Deps }).deps;
     const accounts = deps.accounts.list(deps.cfg.tenantId);
-    return {
-      operational: accounts.some((account) => account.status === 'active'),
-      checked_at: Date.now(),
-    };
+    const active = accounts.find((account) => account.status === 'active');
+    if (!active) {
+      return { operational: false, checked_at: Date.now() };
+    }
+    // A persisted DB status can outlive an MT5 restart. Confirm that the
+    // live command bridge can still read the account before closing VNC.
+    try {
+      const accountRef = `${deps.connector.id}-${active.broker_server}-${active.broker_login}`;
+      const live = await deps.connector.getAccount(accountRef);
+      return {
+        operational: String(live.login ?? '') === active.broker_login,
+        checked_at: Date.now(),
+      };
+    } catch {
+      return { operational: false, checked_at: Date.now() };
+    }
   });
 
   /**

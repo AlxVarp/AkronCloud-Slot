@@ -38,7 +38,7 @@ export async function registerMobileRoutes(app: FastifyInstance): Promise<void> 
       .send(DESKTOP_HTML);
   });
   app.get('/mobile', async (_req, reply) => {
-    return reply.redirect(308, '/terminal');
+    return reply.redirect('/terminal', 308);
   });
   // /desktop — desktop-friendly VNC wrapper for KasmVNC.
   // /mobile is the proven-working template; /desktop is a thinner
@@ -50,7 +50,7 @@ export async function registerMobileRoutes(app: FastifyInstance): Promise<void> 
   // the canvas. (We removed the iOS / mobile-only padding and
   // credential-fill UI for desktop.)
   app.get('/desktop', async (_req, reply) => {
-    return reply.redirect(308, '/terminal');
+    return reply.redirect('/terminal', 308);
   });
   // 1x1 transparent PNG. Browsers auto-request /favicon.ico on every
   // page load; without this we get a noisy 404 in the console.
