@@ -541,7 +541,7 @@ RUN WINEPREFIX=/config/.wine \
       curl -fsSL -o numpy.whl \
         https://files.pythonhosted.org/packages/b5/42/054082bd8220bbf6f297f982f0a8f5479fcbc55c8b511d928df07b965869/numpy-1.26.4-cp39-cp39-win_amd64.whl && \
       mkdir -p "$PY64" && \
-      (cd "$PY64" && unzip -q /tmp/setup/py64.zip) && \
+      (cd "$PY64" && unzip -qo /tmp/setup/py64.zip) && \
       echo 'Lib\\site-packages' >> "$PY64/python39._pth" && \
       mkdir -p "$PY64/Lib/site-packages" && \
       unzip -q /tmp/setup/mt5.whl -d /tmp/setup/mt5_extract && \
@@ -567,7 +567,8 @@ RUN WINEPREFIX=/config/.wine \
 # Reads `mt5.account_info()` on a 1.5s poll, diffs against last frame,
 # publishes only on change.
 COPY src/services/mt5-account-publisher.py /opt/akron-mt5-account-publisher.py
-RUN chmod +x /opt/akron-mt5-account-publisher.py
+COPY src/services/mt5-command-server.py /opt/akron-mt5-command-server.py
+RUN chmod +x /opt/akron-mt5-account-publisher.py /opt/akron-mt5-command-server.py
 
 # ─── v54: s6 service — runs account-publisher after MT5 is up ────────
 # Longrun, depends on svc-de (the openbox session that launches MT5).
@@ -584,6 +585,7 @@ export HOME=/config
 export XDG_RUNTIME_DIR=/config/.XDG
 export DISPLAY=:0
 export PYTHONHASHSEED=0
+export MT5_COMMAND_SERVER_ENABLED=0
 cd /config
 exec s6-setuidgid abc /opt/wine-stable/bin/wine \
   /config/.wine/drive_c/Python39/python.exe \
@@ -595,6 +597,19 @@ RUN mkdir -p /etc/s6-overlay/s6-rc.d/svc-mt5-account-publisher/dependencies.d &&
     ln -sfn /etc/s6-overlay/s6-rc.d/svc-de \
             /etc/s6-overlay/s6-rc.d/svc-mt5-account-publisher/dependencies.d/svc-de
 RUN touch /etc/s6-overlay/s6-rc.d/user/contents.d/svc-mt5-account-publisher
+
+RUN mkdir -p /etc/s6-overlay/s6-rc.d/svc-mt5-command-server && \
+ printf '#!/usr/bin/with-contenv bash\nexport WINEPREFIX=/config/.wine WINEDEBUG=-all HOME=/config XDG_RUNTIME_DIR=/config/.XDG DISPLAY=:0 PYTHONHASHSEED=0\nexec s6-setuidgid abc /opt/wine-stable/bin/wine /config/.wine/drive_c/Python39/python.exe /opt/akron-mt5-command-server.py\n' > /etc/s6-overlay/s6-rc.d/svc-mt5-command-server/run && \
+ chmod +x /etc/s6-overlay/s6-rc.d/svc-mt5-command-server/run && \
+ printf 'longrun\n' > /etc/s6-overlay/s6-rc.d/svc-mt5-command-server/type && \
+ mkdir -p /etc/s6-overlay/s6-rc.d/svc-mt5-command-server/dependencies.d && \
+ ln -sfn /etc/s6-overlay/s6-rc.d/svc-de /etc/s6-overlay/s6-rc.d/svc-mt5-command-server/dependencies.d/svc-de && \
+ touch /etc/s6-overlay/s6-rc.d/user/contents.d/svc-mt5-command-server
+
+# Docker builds invoked from a Windows checkout can preserve CRLF in
+# heredoc-generated s6 run files. Linux then sees `/usr/bin/with-contenv bash\r`
+# and silently leaves MT5 and the command server down.
+RUN find /etc/s6-overlay -type f -name run -exec sed -i 's/\r$//' {} +
 
 EXPOSE 7777
 HEALTHCHECK --interval=30s --timeout=3s --start-period=30s --retries=3 \

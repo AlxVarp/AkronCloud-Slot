@@ -74,6 +74,10 @@ export const DESKTOP_HTML = `<!DOCTYPE html>
     }
     #bar button:hover  { background: #21262d; }
     #bar button:active { transform: translateY(1px); }
+    #syncFab { position: fixed; right: 18px; bottom: 48px; z-index: 10;
+      border: 0; border-radius: 999px; padding: 11px 16px; cursor: pointer;
+      background: #238636; color: #fff; font-weight: 700; box-shadow: 0 4px 16px #0009; }
+    #syncFab:disabled { opacity: .65; cursor: wait; }
   </style>
 </head>
 <body>
@@ -81,6 +85,7 @@ export const DESKTOP_HTML = `<!DOCTYPE html>
   <div id="screen">
     <div id="placeholder">connecting…</div>
   </div>
+  <button id="syncFab" type="button" title="Sincronizar la cuenta MT5 después de iniciar sesión">↻ Sincronizar MT5</button>
   <div id="bar">
     <span class="dot" id="dot"></span>
     <span class="stat" id="conn">disconnected</span>
@@ -122,6 +127,7 @@ const conn = document.getElementById('conn');
 const clicksEl = document.getElementById('clicks');
 const rfbClicksEl = document.getElementById('rfbClicks');
 const lastEl = document.getElementById('last');
+const syncFab = document.getElementById('syncFab');
 
 // KasmVNC's RFB fork does not expose getCanvas(). The canvas is
 // always the only <canvas> under #screen (we wipe screen.innerHTML
@@ -259,6 +265,15 @@ function connect() {
 
 document.getElementById('reconnect').addEventListener('click', () => {
   setTimeout(connect, 50);
+});
+syncFab.addEventListener('click', async () => {
+  syncFab.disabled = true; syncFab.textContent = 'Sincronizando…';
+  try {
+    const r = await fetch('/internal/sync', { method: 'POST' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    syncFab.textContent = '✓ Sincronizado';
+  } catch (_) { syncFab.textContent = '✕ Reintentar sync'; }
+  setTimeout(() => { syncFab.disabled = false; syncFab.textContent = '↻ Sincronizar MT5'; }, 2200);
 });
 
 // window-level keydown → forward to the canvas so MT5 receives

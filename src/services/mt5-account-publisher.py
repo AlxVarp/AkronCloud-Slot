@@ -82,6 +82,7 @@ INIT_RETRY_SECS = float(os.environ.get("MT5_INIT_RETRY_SECS", "5.0"))
 INIT_TIMEOUT_SECS = float(os.environ.get("MT5_INIT_TIMEOUT_SECS", "60.0"))
 COMMAND_HOST = os.environ.get("SLOT_MT5_CMD_BIND", "127.0.0.1")
 COMMAND_PORT = int(os.environ.get("SLOT_MT5_CMD_PORT", "7780"))
+COMMAND_SERVER_ENABLED = os.environ.get("MT5_COMMAND_SERVER_ENABLED", "1") == "1"
 
 # After this many consecutive `mt5.account_info() → None` polls, the
 # publisher assumes the IPC connection silently died (MT5 broker
@@ -327,7 +328,7 @@ def loop() -> int:
         log.error("MetaTrader5 not importable: %s", IMPORT_ERROR)
         log.error("publisher will run in heartbeat-only mode")
 
-    command_server = start_command_server()
+    command_server = start_command_server() if COMMAND_SERVER_ENABLED else None
     client = SlotClient(SLOT_HOST, SLOT_PORT)
     last_sent: Optional[dict[str, Any]] = None
     init_started_at = time.monotonic()
@@ -446,8 +447,9 @@ def loop() -> int:
             time.sleep(min(0.2, POLL_SECS - slept))
             slept += 0.2
 
-    command_server.shutdown()
-    command_server.server_close()
+    if command_server is not None:
+        command_server.shutdown()
+        command_server.server_close()
     client.close()
     log.info("publisher loop exited cleanly")
     return 0
