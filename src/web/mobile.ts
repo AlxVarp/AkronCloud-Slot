@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { DESKTOP_HTML } from './desktop.html.js';
+import { MOBILE_HTML } from './mobile.html.js';
 import { registerVncStaticRoutes } from './vnc-static-routes.js';
 import { registerMt5WsProxy } from './mt5-ws-proxy.js';
 
@@ -35,7 +35,7 @@ export async function registerMobileRoutes(app: FastifyInstance): Promise<void> 
     reply
       .type('text/html; charset=utf-8')
       .header('Cache-Control', 'no-cache, no-store, must-revalidate')
-      .send(DESKTOP_HTML);
+      .send(MOBILE_HTML);
   });
   app.get('/mobile', async (_req, reply) => {
     return reply.redirect('/terminal', 308);

@@ -80,11 +80,15 @@ export const MOBILE_HTML = `<!DOCTYPE html>
       background: var(--accent); color: #fff; border-color: var(--accent);
     }
     #topbar button.primary:disabled { opacity: .5; }
+    /* The terminal is configured from MT5 itself. Keep this wrapper to one
+       intentional action: Sync. The virtual keyboard remains below. */
+    #topbar { justify-content: flex-end; }
+    #topbar .status, #topbar .label, #credsbtn, #resetbtn, #reloadbtn {
+      display: none;
+    }
 
-    /* Full-viewport canvas container. The canvas inside is
-       position:absolute + transform-centered via JS (see
-       applyCanvasCentering), not via CSS - RFB's inline display:flex
-       + margin:auto on the canvas beat author CSS !important rules. */
+    /* RFB owns the canvas dimensions and its scaleViewport transform. Do not
+       apply a second CSS transform here: it makes touch coordinates drift. */
     #screen {
       flex: 1; min-height: 0;
       /* Background is the same near-black as the page so the
@@ -376,6 +380,7 @@ const placeholder = document.getElementById('placeholder');
 const credsheet   = document.getElementById('credsheet');
 const credbtn     = document.getElementById('credsbtn');
 const reloadbtn   = document.getElementById('reloadbtn');
+const keyboard    = document.getElementById('keyboard');
 
 const host = location.host;
 // location.host includes the port when it's non-default
@@ -485,7 +490,6 @@ function connect() {
     // arrives, so /v1/accounts reflects the live session quickly.
     // It is a no-op if the connector is not running.
     enableSyncButton();
-    triggerSync('auto');
     // mouseButtonMapper init and _handleSubscribeUnixRelay shim run
     // at the prototype level (top of this <script>). Do NOT redo
     // them here - they already apply for every RFB instance.
@@ -527,33 +531,7 @@ function fit() {
   try {
     RFB.messages.fbUpdateRequest(rfb._sock, false, 0, 0, rfb._fbWidth, rfb._fbHeight);
   } catch (e) { /* defensive */ }
-  applyCanvasCentering();
   setTimeout(() => setStatus('ok', 'refreshed (' + (rfb._fbWidth || 0) + 'x' + (rfb._fbHeight || 0) + ')'), 350);
-}
-
-// Force the canvas to be centered inside RFB's wrapper <div>. RFB
-// inlines display:flex + margin:auto on the canvas, which wins
-// over our flex/justify-content author CSS via inline style
-// specificity. Setting the inline style here (after RFB has run
-// its constructor and connected) is the only thing that reliably
-// works. Called once on connect (via fit() in the connect
-// listener) and any time fit() runs.
-function applyCanvasCentering() {
-  const rfbScreen = screen.querySelector('div');
-  if (rfbScreen) {
-    rfbScreen.style.position = 'relative';
-    rfbScreen.style.width = '100%';
-    rfbScreen.style.height = '100%';
-    rfbScreen.style.display = 'block';
-  }
-  const canvas = screen.querySelector('canvas');
-  if (canvas) {
-    canvas.style.position = 'absolute';
-    canvas.style.top = '50%';
-    canvas.style.left = '50%';
-    canvas.style.margin = '0';
-    canvas.style.transform = 'translate(-50%, -50%)';
-  }
 }
 
 const XK = {
@@ -834,19 +812,33 @@ function enableSyncButton() {
   syncbtn.textContent = 'Sync';
   syncbtn.onclick = () => triggerSync('manual');
 }
-async function triggerSync(reason) {
+async function triggerSync(_reason) {
   syncbtn.disabled = true;
   syncbtn.textContent = 'Syncing…';
   try {
     const r = await fetch('/internal/sync', { method: 'POST' });
-    const body = await r.json().catch(() => ({}));
-    const n = (body && body.accounts) ? body.accounts.length : 0;
-    setStatus('ok', 'synced ' + n + ' acct' + (n === 1 ? '' : 's') + ' (' + reason + ')');
-    setTimeout(() => { syncbtn.disabled = false; syncbtn.textContent = 'Sync'; }, 1200);
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const deadline = Date.now() + 20_000;
+    let operational = false;
+    while (Date.now() < deadline) {
+      const status = await fetch('/internal/operational', { cache: 'no-store' });
+      if (status.ok && (await status.json()).operational === true) {
+        operational = true;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 750));
+    }
+    if (!operational) throw new Error('MT5 not operational yet');
+    if (rfb) { try { rfb.disconnect(); } catch (_) {} }
+    rfb = null;
+    screen.innerHTML = '<div id="placeholder">Cuenta sincronizada. MT5 y la API continúan operativos.</div>';
+    keyboard.style.display = 'none';
+    syncbtn.style.display = 'none';
+    setStatus('ok', 'visual session hidden');
   } catch (err) {
     setStatus('err', 'sync failed: ' + (err && err.message || err));
     syncbtn.disabled = false;
-    syncbtn.textContent = 'Sync';
+    syncbtn.textContent = 'Retry Sync';
   }
 }
 document.getElementById('credform').addEventListener('submit', (e) => {
