@@ -207,10 +207,10 @@ export const MOBILE_HTML = `<!DOCTYPE html>
       text-transform: uppercase;
     }
 
-    /* One adaptive workspace for both routes. On a mouse/keyboard-sized
-       viewport the remote desktop gets all remaining space and the browser's
-       physical keyboard is used; touch controls remain available on phones. */
-    @media (min-width: 760px) and (min-height: 560px) {
+    /* One adaptive workspace for both routes. Decide from the input device,
+       not from CSS pixels: high-DPI phones and landscape phones can be wide
+       while still requiring the virtual keyboard. */
+    @media (hover: hover) and (pointer: fine) {
       #keyboard { display: none; }
       #topbar { padding: 7px 12px; gap: 9px; font-size: 13px; }
       #topbar .label { font-size: 13px; }
@@ -403,6 +403,7 @@ const creds = loadCreds();
 let rfb = null;
 let reconnectTimer = null;
 let reconnectAttempt = 0;
+let fitFrame = null;
 
 function scheduleReconnect() {
   if (reconnectTimer) return;
@@ -521,10 +522,6 @@ function fit() {
   //      feedback that the click did something. On a perfectly-fitted
   //      canvas #1 above produces the same final result as before,
   //      so the click would otherwise feel dead.
-  //   4. Re-apply our JS-level canvas centering. CSS !important with
-  //      RFB's inline margin:auto had been getting in a CSS
-  //      specificity war. Setting the inline style after RFB finished
-  //      its own setup is robust and bulletproof.
   if (!rfb) return;
   setStatus('ok', 'refitting + refreshing framebuffer…');
   try { rfb._updateScale(); } catch (e) { /* defensive */ }
@@ -532,6 +529,24 @@ function fit() {
     RFB.messages.fbUpdateRequest(rfb._sock, false, 0, 0, rfb._fbWidth, rfb._fbHeight);
   } catch (e) { /* defensive */ }
   setTimeout(() => setStatus('ok', 'refreshed (' + (rfb._fbWidth || 0) + 'x' + (rfb._fbHeight || 0) + ')'), 350);
+}
+
+// Mobile browsers alter the visual viewport when their software keyboard,
+// browser chrome, or orientation changes. Recompute RFB's own scale after the
+// layout settles; do not write canvas geometry here, because RFB owns both
+// scaling and pointer-coordinate mapping.
+function scheduleFit() {
+  if (fitFrame !== null) return;
+  fitFrame = requestAnimationFrame(() => {
+    fitFrame = null;
+    fit();
+  });
+}
+
+window.addEventListener('resize', scheduleFit, { passive: true });
+window.addEventListener('orientationchange', scheduleFit, { passive: true });
+if (window.visualViewport) {
+  window.visualViewport.addEventListener('resize', scheduleFit, { passive: true });
 }
 
 const XK = {
