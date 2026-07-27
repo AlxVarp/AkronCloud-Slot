@@ -226,8 +226,12 @@ chmod 600 /etc/kasmvnc/passwd
 # only contains the hash, no `:rwo` suffix). Both missing pieces are
 # fixed here.
 KASMVNC_USERNAME="${KASMVNC_USERNAME:-abc}"
+# `-o` grants session ownership in addition to read/write. Without an
+# owner KasmVNC can display the desktop but leave native Wine modal dialogs
+# without an input owner when a browser reconnects or another shared client
+# is still attached.
 printf '%s\n%s\n' "$KASMVNC_PASSWORD" "$KASMVNC_PASSWORD" \
-  | kasmvncpasswd -u "$KASMVNC_USERNAME" -r -w /config/.kasmpasswd
+  | kasmvncpasswd -u "$KASMVNC_USERNAME" -r -w -o /config/.kasmpasswd
 chmod 600 /config/.kasmpasswd
 # Both files must be owned by abc (the user that s6-setuidgid drops
 # to before exec'ing Xvnc). kasmvncpasswd writes the file as root;
