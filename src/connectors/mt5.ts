@@ -327,8 +327,8 @@ export class Mt5Connector implements BrokerConnector {
   ): Promise<SymbolSpec[]> {
     const result = await this.mt5Query<{
       count?: number;
-      symbols?: Array<{
-        symbol: string;
+      symbols?: Array<string | {
+        symbol?: string;
         digits?: number;
         min_lot?: number;
         max_lot?: number;
@@ -341,14 +341,19 @@ export class Mt5Connector implements BrokerConnector {
       market_watch_only: opts?.marketWatchOnly ?? false,
     });
     const syms = result.symbols ?? [];
-    return syms.map((s) => ({
-      symbol: s.symbol,
-      digits: s.digits ?? 5,
-      min_lot: s.min_lot ?? 0.01,
-      max_lot: s.max_lot ?? 100,
-      lot_step: s.lot_step ?? 0.01,
-      currency: s.currency ?? 'USD',
-    }));
+    return syms.flatMap((entry) => {
+      const s = typeof entry === 'string' ? { symbol: entry } : entry;
+      const symbol = s.symbol?.trim();
+      if (!symbol) return [];
+      return [{
+        symbol,
+        digits: s.digits ?? 5,
+        min_lot: s.min_lot ?? 0.01,
+        max_lot: s.max_lot ?? 100,
+        lot_step: s.lot_step ?? 0.01,
+        currency: s.currency ?? 'USD',
+      }];
+    });
   }
 
   async quote(_accountRef: string, symbol: string): Promise<Quote> {
