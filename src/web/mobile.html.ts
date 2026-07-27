@@ -466,6 +466,18 @@ function connect() {
     reconnectAttempt = 0;
     setStatus('ok', 'connected to MT5');
     placeholder.style.display = 'none';
+    // A canvas is not keyboard-focusable by default. On desktop-sized
+    // adaptive layouts that left the RFB client visually connected but made
+    // pointer/keyboard interaction unreliable after the browser focused the
+    // top bar. Make the actual RFB target focusable and keep focus on it when
+    // the user starts interacting with MT5.
+    const canvas = screen.querySelector('canvas');
+    if (canvas) {
+      canvas.tabIndex = 0;
+      canvas.style.cursor = 'none';
+      canvas.addEventListener('pointerdown', () => canvas.focus(), { passive: true });
+      canvas.focus();
+    }
     fit();
     // Auto-sync once on connect. SlotService.mq5 will emit an
     // account_status event shortly after the MT5 desktop is up; this
