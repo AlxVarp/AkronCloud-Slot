@@ -329,8 +329,12 @@ RUN chown abc:abc \
 # before adding. Charts that lack an AccountReporter line get one
 # injected right before </window>.
 COPY scripts/inject-account-reporter.py /usr/local/bin/inject-account-reporter.py
-RUN chmod +x /usr/local/bin/inject-account-reporter.py && \
-    /usr/local/bin/inject-account-reporter.py 2>&1 | sed 's/^/  [inject] /'
+# A Windows checkout can preserve CRLF in the script's shebang.  Execute it
+# explicitly with Python and do not pipe its output, so a failed injection
+# fails the image build instead of being hidden by `sed`'s zero exit code.
+RUN sed -i 's/\r$//' /usr/local/bin/inject-account-reporter.py && \
+    chmod +x /usr/local/bin/inject-account-reporter.py && \
+    /usr/bin/python3 /usr/local/bin/inject-account-reporter.py
 
 COPY --chown=root:root src/services/mt5-state-bridge.py /opt/akron-mt5-state-bridge.py
 RUN mkdir -p /etc/s6-overlay/s6-rc.d/svc-mt5-state-bridge && \
@@ -606,10 +610,12 @@ RUN mkdir -p /etc/s6-overlay/s6-rc.d/svc-mt5-command-server && \
  ln -sfn /etc/s6-overlay/s6-rc.d/svc-de /etc/s6-overlay/s6-rc.d/svc-mt5-command-server/dependencies.d/svc-de && \
  touch /etc/s6-overlay/s6-rc.d/user/contents.d/svc-mt5-command-server
 
-# Docker builds invoked from a Windows checkout can preserve CRLF in
-# heredoc-generated s6 run files. Linux then sees `/usr/bin/with-contenv bash\r`
-# and silently leaves MT5 and the command server down.
-RUN find /etc/s6-overlay -type f -name run -exec sed -i 's/\r$//' {} +
+# Docker builds invoked from a Windows checkout can preserve CRLF in shell
+# entrypoints.  That turns paths into e.g. `/config/.wine\r` and interpreters
+# into `/usr/bin/env bash\r`, leaving MT5 half-initialized even though s6 says
+# its services are up. Normalize both s6 run files and Openbox's MT5 launcher.
+RUN find /etc/s6-overlay /config/.config -type f \( -name run -o -name '*.sh' -o -name autostart \) \
+    -exec sed -i 's/\r$//' {} +
 
 EXPOSE 7777
 HEALTHCHECK --interval=30s --timeout=3s --start-period=30s --retries=3 \
