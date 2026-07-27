@@ -22,21 +22,31 @@ EVENT_HOST = "127.0.0.1"
 EVENT_PORT = 7778
 
 
-def publish_event(kind: str, data: dict[str, Any]) -> None:
-    """Best-effort fan-out of broker executions to the slot event source."""
-    frame = json.dumps(
-        {"type": "event", "kind": kind, "data": data, "ts": int(time.time() * 1000)},
-        separators=(",", ":"),
-        default=str,
-    ).encode("utf-8") + b"\n"
+def publish_events(events: list[tuple[str, dict[str, Any]]]) -> None:
+    """Best-effort fan-out of related broker executions on one TCP session.
+
+    The event server intentionally has a single active producer socket. Sending
+    the state and fill frames on distinct short-lived connections allowed the
+    second connect to replace the first before the consumer had drained both
+    frames, which could make downstream WebSocket clients miss a fill.
+    """
+    timestamp = int(time.time() * 1000)
+    frames = b"".join(
+        json.dumps(
+            {"type": "event", "kind": kind, "data": data, "ts": timestamp},
+            separators=(",", ":"),
+            default=str,
+        ).encode("utf-8") + b"\n"
+        for kind, data in events
+    )
     try:
         with socket.create_connection((EVENT_HOST, EVENT_PORT), timeout=1.0) as sock:
-            sock.sendall(frame)
+            sock.sendall(frames)
     except OSError as exc:
         # A broker execution must not be reported as failed just because local
         # telemetry is temporarily unavailable. History reconciliation remains
         # the recovery path in that rare case.
-        log.warning("event publish %s failed: %s", kind, exc)
+        log.warning("event publish failed: %s", exc)
 
 
 def publish_execution(result: Any, *, symbol: str, volume: float, price: float) -> None:
@@ -46,18 +56,17 @@ def publish_execution(result: Any, *, symbol: str, volume: float, price: float) 
     broker_order_id = order or deal
     if not broker_order_id:
         return
-    publish_event("order_state", {"broker_order_id": broker_order_id, "status": "filled"})
-    publish_event(
-        "fill",
-        {
+    publish_events([
+        ("order_state", {"broker_order_id": broker_order_id, "status": "filled"}),
+        ("fill", {
             "broker_order_id": broker_order_id,
             "deal": deal,
             "symbol": symbol,
             "qty": volume,
             "volume": volume,
             "price": float(getattr(result, "price", 0.0) or price),
-        },
-    )
+        }),
+    ])
 
 
 def ready() -> bool:

@@ -146,6 +146,48 @@ The 588.4 ms EURUSD max was a first-call/warm-up outlier. The remaining
 symbols and samples stayed below 74 ms. This is adequate for command/control
 and signal-source use; it is not a low-latency/HFT transport guarantee.
 
+## Multi-symbol execution benchmark
+
+Three `0.01` demo market buys were opened and then closed immediately through
+the command bridge. They were intentionally held only long enough to verify
+that multiple distinct symbols can coexist in MT5. Final positions were zero.
+
+| Symbol | Open ms | Close ms |
+|---|---:|---:|
+| EURUSD | 942.5 | 407.6 |
+| GBPUSD | 339.9 | 381.0 |
+| USDJPY | 355.1 | 378.4 |
+
+EURUSD again included a first-call warm-up delay. The other operations stayed
+in the 340–408 ms range, including broker acknowledgement, Wine IPC and local
+event publication. Each open and close generated both `order_state=filled` and
+`fill` frames on port 7778. The test account ended with zero positions.
+
+## Signal-source validation
+
+A live WebSocket client connected to `GET /v1/stream` and a `0.01` GBPUSD demo
+order was opened and closed. The client received both frames for the same
+broker order (`5727784092`):
+
+```json
+{"kind":"order_state","data":{"order_id":"5727784092","status":"filled"}}
+{"kind":"fill","data":{"broker_order_id":"5727784092","symbol":"GBPUSD","qty":0.01,"price":1.33181}}
+```
+
+The command bridge now sends the correlated state and fill frames through one
+event-socket connection. This avoids a connection-replacement race in the
+single-producer TCP event server, so downstream WebSocket consumers can use
+the slot as an execution-signal source.
+
+## AutoTrading recovery
+
+The image starts `svc-mt5-autotrading-guard` after the desktop service. It
+checks MT5's authoritative `terminal_info().trade_allowed` flag every 20
+seconds and, if disabled, opens MT5 Options and enables **Allow algorithmic
+trading**. The Wine output is normalized before comparison and the Expert
+Advisors tab is selected explicitly (Wine can skip it when cycling tabs with
+`Ctrl+Tab`). No order is placed by this guard.
+
 ## Operational checks
 
 ```powershell

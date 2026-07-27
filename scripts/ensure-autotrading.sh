@@ -23,7 +23,7 @@ terminal_allows_trading() {
     XDG_RUNTIME_DIR=/config/.XDG DISPLAY=:0 PYTHONHASHSEED=0 \
     "$WINE" "$PY" -c \
     'import MetaTrader5 as m; print("1" if m.initialize(timeout=3000) and m.terminal_info() and m.terminal_info().trade_allowed else "0")' \
-    2>/dev/null | tail -n 1 || true)
+    2>/dev/null | tail -n 1 | tr -d '\r' || true)
   [[ "$state" == '1' ]]
 }
 
@@ -47,23 +47,22 @@ enable_with_ui() {
   fi
   [[ -n "$options" ]] || return 1
 
-  # Server -> Charts -> Trade -> Expert Advisors. Use separate key events:
-  # xdotool coalesces repeated Ctrl+Tab presses under Wine otherwise.
-  s6-setuidgid abc env DISPLAY=:0 xdotool windowactivate --sync "$options" key ctrl+Tab
-  sleep 0.15
-  s6-setuidgid abc env DISPLAY=:0 xdotool key ctrl+Tab
-  sleep 0.15
-  s6-setuidgid abc env DISPLAY=:0 xdotool key ctrl+Tab
-  sleep 0.4
-
+  # Ctrl+Tab is not reliable under Wine (it can skip through to
+  # Notifications), so select the Expert Advisors tab explicitly. MT5
+  # consistently presents this dialog as 620x389 on the 1024x768 desktop.
   eval "$(s6-setuidgid abc env DISPLAY=:0 xdotool getwindowgeometry --shell "$options")"
-  # First checkbox is "Allow algorithmic trading" at (35,55) relative to
-  # the Options window. Click once only after the API reported it disabled.
-  s6-setuidgid abc env DISPLAY=:0 xdotool mousemove "$((X + 35))" "$((Y + 55))" click 1
+  if [[ "$WIDTH" != '620' || "$HEIGHT" != '389' ]]; then
+    log "unexpected Options geometry ${WIDTH}x${HEIGHT}; will retry"
+    s6-setuidgid abc env DISPLAY=:0 xdotool key Escape
+    return 1
+  fi
+  s6-setuidgid abc env DISPLAY=:0 xdotool mousemove "$((X + 185))" "$((Y - 9))" click 1
+  sleep 0.3
+  # First checkbox is "Allow algorithmic trading". Click once only after
+  # the authoritative MT5 API reported it disabled.
+  s6-setuidgid abc env DISPLAY=:0 xdotool mousemove "$((X + 36))" "$((Y + 37))" click 1
   sleep 0.2
-  # OK is the center button along the bottom; deriving the coordinates from
-  # the actual dialog geometry works with both maximized and normal dialogs.
-  s6-setuidgid abc env DISPLAY=:0 xdotool mousemove "$((X + WIDTH * 2 / 3))" "$((Y + HEIGHT - 18))" click 1
+  s6-setuidgid abc env DISPLAY=:0 xdotool mousemove "$((X + 414))" "$((Y + 348))" click 1
 }
 
 log 'AutoTrading guard started'
