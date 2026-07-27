@@ -7,6 +7,7 @@ import {
   startLoginDetector,
   readSlotState,
   parseAccountTitle,
+  isAuthenticatedTitle,
 } from '../src/services/login-detector.js';
 
 let dir: string;
@@ -92,20 +93,14 @@ describe('startLoginDetector.refresh()', () => {
 });
 
 describe('login-detector wmctrl regex (parse title)', () => {
-  it('matches the typical "MetaTrader 5 - <style> - <chart>" main window title', () => {
-    // We just assert the regex shapes the detector uses. End-to-end
-    // with a real wmctrl is covered by manually running the
-    // container and inspecting /v1/lifecycle.
-    const titles = [
-      'MetaTrader 5 - Netting - EURUSD,H1',
-      'Deriv-Demo: Demo Account - Hedge - Deriv.com Limited',
-      'Account: 12345678',
-      'MetaTrader 5',
-    ];
-    expect(titles[0]).toMatch(/^MetaTrader 5/);
-    expect(titles[1]).toMatch(/:/);
-    expect(titles[2]).toMatch(/^Account:\s/i);
-    expect(titles[3]).toMatch(/^MetaTrader 5/);
+  it('does not treat a fresh chart window as an authenticated account', () => {
+    expect(isAuthenticatedTitle('MetaTrader 5 - Netting - EURUSD,H1')).toBe(false);
+    expect(isAuthenticatedTitle('MetaTrader 5')).toBe(false);
+  });
+
+  it('requires an account id in a post-login title', () => {
+    expect(isAuthenticatedTitle('32141235 - Deriv-Demo: Demo Account - Hedge')).toBe(true);
+    expect(isAuthenticatedTitle('Account: 12345678')).toBe(true);
   });
 
   it('rejects pre-login titles', () => {

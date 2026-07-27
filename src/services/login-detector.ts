@@ -108,7 +108,7 @@ async function probeLogin(): Promise<[
       // user logs in.  Do not mistake it for an authenticated session:
       // only an extractable account login proves that MT5 is logged in.
       const account = parseAccountTitle(title);
-      if (account.login) {
+      if (isAuthenticatedTitle(title)) {
         return [true, account];
       }
     }
@@ -154,6 +154,11 @@ export function parseAccountTitle(title: string): { login?: string; server?: str
     return out;
   }
   return out;
+}
+
+/** A terminal title proves authentication only when it contains an account id. */
+export function isAuthenticatedTitle(title: string): boolean {
+  return Boolean(parseAccountTitle(title).login);
 }
 
 // Back-compat alias used by the tick() loop and refresh().
