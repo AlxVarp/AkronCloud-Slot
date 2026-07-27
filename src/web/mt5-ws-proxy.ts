@@ -72,6 +72,30 @@ export async function registerMt5WsProxy(app: FastifyInstance): Promise<void> {
 
       let clientOpen = true;
       let upstreamOpen = false;
+      // RFB sends setup and input as binary frames. The browser can emit a
+      // frame immediately after opening its side of the proxy, while the
+      // server-side connection to KasmVNC is still handshaking. Dropping
+      // those frames creates a particularly confusing state: video is shown
+      // but clicks or typing in a newly opened MT5 dialog do nothing.
+      const pendingClientFrames: Array<{ data: Buffer | ArrayBuffer | Buffer[]; isBinary: boolean }> = [];
+
+      const forwardToUpstream = (
+        data: Buffer | ArrayBuffer | Buffer[],
+        isBinary: boolean,
+      ): void => {
+        if (upstream.readyState !== WebSocket.OPEN) {
+          // Bound the queue: RFB's negotiation is tiny, and retaining an
+          // unbounded stream while KasmVNC is down would be unsafe.
+          if (pendingClientFrames.length < 256) pendingClientFrames.push({ data, isBinary });
+          return;
+        }
+        try {
+          upstream.send(data as ArrayBuffer | Buffer, { binary: isBinary });
+        } catch (err) {
+          log.warn({ err: (err as Error).message }, 'mt5-ws upstream send failed');
+          closeBoth('upstream send failed');
+        }
+      };
 
       const closeBoth = (reason: string): void => {
         if (!clientOpen && !upstreamOpen) return;
@@ -84,6 +108,9 @@ export async function registerMt5WsProxy(app: FastifyInstance): Promise<void> {
 
       upstream.on('open', () => {
         upstreamOpen = true;
+        for (const frame of pendingClientFrames.splice(0)) {
+          forwardToUpstream(frame.data, frame.isBinary);
+        }
         log.info('mt5-ws upstream opened to KasmVNC');
       });
 
@@ -111,16 +138,8 @@ export async function registerMt5WsProxy(app: FastifyInstance): Promise<void> {
         }
       });
 
-      client.on('message', (data: Buffer | ArrayBuffer | Buffer[]) => {
-        if (!upstreamOpen) return;
-        try {
-          if (upstream.readyState === 1 /* OPEN */) {
-            upstream.send(data as ArrayBuffer | Buffer);
-          }
-        } catch (err) {
-          log.warn({ err: (err as Error).message }, 'mt5-ws upstream send failed');
-          closeBoth('upstream send failed');
-        }
+      client.on('message', (data: Buffer | ArrayBuffer | Buffer[], isBinary: boolean) => {
+        forwardToUpstream(data, isBinary);
       });
 
       client.on('close', (code: number, reason: Buffer) => {
