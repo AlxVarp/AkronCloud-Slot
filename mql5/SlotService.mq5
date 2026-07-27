@@ -36,7 +36,7 @@
 //
 //+------------------------------------------------------------------+
 #property copyright "akroncloud-slot"
-#property version   "2.12"
+#property version   "2.14"
 #property service
 #property strict  false
 
@@ -66,7 +66,7 @@
 #define AF_INET          2
 #define SOCK_STREAM       1
 #define IPPROTO_TCP       6
-#define MSG_DONTWAIT    0x40
+#define FIONBIO         0x8004667E
 #define RECV_CHUNK_MAX   4096
 #define RECV_BUF_MAX    65536
 #define HTONS(a) ((ushort)((((a) & 0xFF) << 8) | (((a) >> 8) & 0xFF)))
@@ -161,17 +161,23 @@ int OnStart()
       }
    }
 
+   // Services receive only OnStart. Returning from this function stops
+   // the service with result code 0; timer events are not dispatched.
    g_lastPollTime = TimeCurrent();
-   EventSetMillisecondTimer(MathMax(50, PollSeconds * 1000));
-   return INIT_SUCCEEDED;
+   int loopWaitMs = MathMax(50, PollSeconds * 1000);
+   PrintFormat("SlotService: v2.14 worker loop started interval=%dms", loopWaitMs);
+   while(!IsStopped()) {
+      RunPeriodicWork();
+      Sleep(loopWaitMs);
+   }
+
+   Print("SlotService: stop requested, cleaning up sockets");
+   CleanupSockets();
+   return 0;
 }
 
-// OnDeinit is fired by MetaEditor build 5800 on graceful shutdowns
-// even though it's flagged as "useless" in #property services. We
-// keep it for socket cleanup. The "useless event handler" warning
-// is suppressed via the static-cast-no-op trick below — the unused
-// (void) cast on a real call makes the compiler not flag it.
-void OnDeinit(const int reason)
+// Services do not receive OnDeinit, so OnStart calls this explicitly.
+void CleanupSockets()
 {
    if(g_cmdSock != INVALID_SOCKET) {
       closesocket(g_cmdSock);
@@ -181,44 +187,32 @@ void OnDeinit(const int reason)
    WSACleanup();
 }
 
-void OnTimer()
+void RunPeriodicWork()
 {
-   // v2.11: events-only over the TCP client (slot:7778). Command
-   // dispatch is handled by PollCommandServer() on the TCP server
-   // port (7779). OnTimer now just keeps the events TCP alive,
-   // polls the command server, and pushes state snapshots.
+   // Events use the TCP client to slot:7778. Commands are polled
+   // independently on the TCP server at CmdWebSocketPort.
 
-   // v2.13 (debug): sentinel print every ~5s. The death-after-5s
+   // Sentinel print every ~5s. The former death-after-5s
    // bug (see docs/sessions/2026-07-26-slotservice-v2.12-
    // investigation.md) might be:
-   //  (a) OnTimer never fires after the service is "started" — this
-   //      print would not appear past the start. If it stops, the
-   //      wine/MQL5 host stopped calling our OnTimer (likely killed
-   //      the MQL5 service thread even though the wineserver still
-   //      has the LISTEN socket)
-   //  (b) OnTimer fires but PollCommandServer never gets a new
-   //      connection — would indicate wine's accept() is broken
-   //  (c) OnTimer fires, PollCommandServer runs, but recv() returns
-   //      0 and the service exits cleanly — the Print on the next
-   //      line would not appear
-   // If after 10s of running this print stops appearing in Experts,
-   // the service thread is dead even though the kernel still has
-   // port 7780 LISTEN. That proves the wine/MT5 service framework
-   // killed the MQL5 thread, not the slot or the network.
+   // investigation now proves that services need a persistent loop
+   // inside OnStart; they do not receive timer events.
    static datetime g_lastTimerPrint = 0;
    if(TimeCurrent() - g_lastTimerPrint >= 5) {
       g_lastTimerPrint = TimeCurrent();
-      PrintFormat("SlotService: OnTimer tick t=%s g_cmdSock=%d g_cmdClients=%d",
+      PrintFormat("SlotService: worker tick t=%s g_cmdSock=%d g_cmdClients=%d",
                   TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS),
                   g_cmdSock, ArraySize(g_cmdClients));
    }
+
+   // Command dispatch must remain available even when the events channel
+   // is offline, otherwise a 7778 outage also disables trading on 7780.
+   PollCommandServer();
 
    if(g_cmdSock == INVALID_SOCKET) {
       ConnectToSlot();
       if(g_cmdSock == INVALID_SOCKET) return;
    }
-
-   PollCommandServer();
 
    // Periodically push state snapshot + broker connection change.
    if(TimeCurrent() - g_lastPollTime >= PollSeconds) {
@@ -336,7 +330,7 @@ bool SendFrame(string json)
    int total = ArraySize(buf);
    int sent  = 0;
    while(sent < total) {
-      int n = send(g_cmdSock, buf, total - sent, MSG_DONTWAIT);
+      int n = send(g_cmdSock, buf, total - sent, 0);
       if(n == SOCKET_ERROR) {
          g_lastWSAErr = WSAGetLastError();
          PrintFormat("SlotService: send failed err=%d, closing", g_lastWSAErr);
@@ -975,6 +969,14 @@ void StartCommandServer()
       closesocket(s);
       return;
    }
+   uchar nonblocking[4];
+   ArrayInitialize(nonblocking, 0);
+   nonblocking[0] = 1;
+   if(ioctlsocket(s, FIONBIO, nonblocking) == SOCKET_ERROR) {
+      PrintFormat("SlotService: cmd ioctlsocket(FIONBIO) err=%d", WSAGetLastError());
+      closesocket(s);
+      return;
+   }
    g_cmdListenSock = s;
    PrintFormat("SlotService: COMMAND SERVER LISTENING on 0.0.0.0:%d socket=%d", CmdWebSocketPort, s);
 }
@@ -1018,22 +1020,29 @@ void PollCommandServer()
       ArrayResize(g_cmdClientBufs, idx + 1);
       g_cmdClients[idx] = cli;
       g_cmdClientBufs[idx] = "";
+      uchar nonblocking[4];
+      ArrayInitialize(nonblocking, 0);
+      nonblocking[0] = 1;
+      if(ioctlsocket(cli, FIONBIO, nonblocking) == SOCKET_ERROR) {
+         PrintFormat("SlotService: cmd client nonblocking err=%d", WSAGetLastError());
+         closesocket(cli);
+         CmdClientRemove(idx);
+         continue;
+      }
       PrintFormat("SlotService: cmd client #%d accepted (sock=%d)", idx, cli);
    }
 
    for(int i = ArraySize(g_cmdClients) - 1; i >= 0; i--) {
       int cli = g_cmdClients[i];
       uchar buf[RECV_CHUNK_MAX];
-      int n = recv(cli, buf, RECV_CHUNK_MAX, MSG_DONTWAIT);
+      int n = recv(cli, buf, RECV_CHUNK_MAX, 0);
       if(n == SOCKET_ERROR) {
          int err = WSAGetLastError();
-         if(err != 10035 && err != 11) {
-            PrintFormat("SlotService: cmd recv err=%d, closing cli=%d", err, cli);
-            closesocket(cli);
-            CmdClientRemove(i);
-            continue;
-         }
-         n = 0;
+         if(err == 10035 || err == 11) continue;
+         PrintFormat("SlotService: cmd recv err=%d, closing cli=%d", err, cli);
+         closesocket(cli);
+         CmdClientRemove(i);
+         continue;
       }
       if(n == 0) {
          PrintFormat("SlotService: cmd cli=%d closed by peer", cli);
