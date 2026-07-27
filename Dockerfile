@@ -575,7 +575,8 @@ RUN WINEPREFIX=/config/.wine \
 # publishes only on change.
 COPY src/services/mt5-account-publisher.py /opt/akron-mt5-account-publisher.py
 COPY src/services/mt5-command-server.py /opt/akron-mt5-command-server.py
-RUN chmod +x /opt/akron-mt5-account-publisher.py /opt/akron-mt5-command-server.py
+COPY scripts/ensure-autotrading.sh /opt/ensure-autotrading.sh
+RUN chmod +x /opt/akron-mt5-account-publisher.py /opt/akron-mt5-command-server.py /opt/ensure-autotrading.sh
 
 # ─── v54: s6 service — runs account-publisher after MT5 is up ────────
 # Longrun, depends on svc-de (the openbox session that launches MT5).
@@ -612,6 +613,17 @@ RUN mkdir -p /etc/s6-overlay/s6-rc.d/svc-mt5-command-server && \
  mkdir -p /etc/s6-overlay/s6-rc.d/svc-mt5-command-server/dependencies.d && \
  ln -sfn /etc/s6-overlay/s6-rc.d/svc-de /etc/s6-overlay/s6-rc.d/svc-mt5-command-server/dependencies.d/svc-de && \
  touch /etc/s6-overlay/s6-rc.d/user/contents.d/svc-mt5-command-server
+
+# MT5 can reset the per-user AutoTrading preference on the first broker login.
+# This guard queries terminal_info().trade_allowed and only uses the Options
+# UI when it is actually disabled, so the user only has to authenticate.
+RUN mkdir -p /etc/s6-overlay/s6-rc.d/svc-mt5-autotrading-guard && \
+ printf '#!/usr/bin/with-contenv bash\nexec /opt/ensure-autotrading.sh\n' > /etc/s6-overlay/s6-rc.d/svc-mt5-autotrading-guard/run && \
+ chmod +x /etc/s6-overlay/s6-rc.d/svc-mt5-autotrading-guard/run && \
+ printf 'longrun\n' > /etc/s6-overlay/s6-rc.d/svc-mt5-autotrading-guard/type && \
+ mkdir -p /etc/s6-overlay/s6-rc.d/svc-mt5-autotrading-guard/dependencies.d && \
+ ln -sfn /etc/s6-overlay/s6-rc.d/svc-de /etc/s6-overlay/s6-rc.d/svc-mt5-autotrading-guard/dependencies.d/svc-de && \
+ touch /etc/s6-overlay/s6-rc.d/user/contents.d/svc-mt5-autotrading-guard
 
 # Docker builds invoked from a Windows checkout can preserve CRLF in shell
 # entrypoints.  That turns paths into e.g. `/config/.wine\r` and interpreters

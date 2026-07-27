@@ -7,6 +7,7 @@ can block in the Wine MT5 IPC layer, which would otherwise stall command replies
 
 import json
 import logging
+import socket
 import socketserver
 import time
 from typing import Any
@@ -16,6 +17,47 @@ import MetaTrader5 as mt5
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("mt5-command-server")
+
+EVENT_HOST = "127.0.0.1"
+EVENT_PORT = 7778
+
+
+def publish_event(kind: str, data: dict[str, Any]) -> None:
+    """Best-effort fan-out of broker executions to the slot event source."""
+    frame = json.dumps(
+        {"type": "event", "kind": kind, "data": data, "ts": int(time.time() * 1000)},
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8") + b"\n"
+    try:
+        with socket.create_connection((EVENT_HOST, EVENT_PORT), timeout=1.0) as sock:
+            sock.sendall(frame)
+    except OSError as exc:
+        # A broker execution must not be reported as failed just because local
+        # telemetry is temporarily unavailable. History reconciliation remains
+        # the recovery path in that rare case.
+        log.warning("event publish %s failed: %s", kind, exc)
+
+
+def publish_execution(result: Any, *, symbol: str, volume: float, price: float) -> None:
+    """Expose a completed market execution as order_state + fill events."""
+    order = str(getattr(result, "order", "") or "")
+    deal = str(getattr(result, "deal", "") or "")
+    broker_order_id = order or deal
+    if not broker_order_id:
+        return
+    publish_event("order_state", {"broker_order_id": broker_order_id, "status": "filled"})
+    publish_event(
+        "fill",
+        {
+            "broker_order_id": broker_order_id,
+            "deal": deal,
+            "symbol": symbol,
+            "qty": volume,
+            "volume": volume,
+            "price": float(getattr(result, "price", 0.0) or price),
+        },
+    )
 
 
 def ready() -> bool:
@@ -84,12 +126,13 @@ def run(action: str, payload: dict[str, Any]) -> dict[str, Any]:
         if tick is None:
             raise RuntimeError("quote_unavailable")
         is_buy = side == "buy"
+        price = tick.ask if is_buy else tick.bid
         result = mt5.order_send({
             "action": mt5.TRADE_ACTION_DEAL,
             "symbol": symbol,
             "volume": volume,
             "type": mt5.ORDER_TYPE_BUY if is_buy else mt5.ORDER_TYPE_SELL,
-            "price": tick.ask if is_buy else tick.bid,
+            "price": price,
             "deviation": int(payload.get("deviation") or 10),
             "sl": float(payload.get("sl") or 0),
             "tp": float(payload.get("tp") or 0),
@@ -98,6 +141,7 @@ def run(action: str, payload: dict[str, Any]) -> dict[str, Any]:
         })
         if result is None or result.retcode not in (mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED):
             raise trade_failed("order_send_failed", result)
+        publish_execution(result, symbol=symbol, volume=volume, price=price)
         return {
             "order_id": str(result.order),
             "broker_order_id": str(result.order),
@@ -115,18 +159,20 @@ def run(action: str, payload: dict[str, Any]) -> dict[str, Any]:
             raise RuntimeError("quote_unavailable")
         volume = float(payload.get("qty") or payload.get("volume") or position.volume)
         is_buy = position.type == mt5.POSITION_TYPE_BUY
+        price = tick.bid if is_buy else tick.ask
         result = mt5.order_send({
             "action": mt5.TRADE_ACTION_DEAL,
             "position": ticket,
             "symbol": position.symbol,
             "volume": volume,
             "type": mt5.ORDER_TYPE_SELL if is_buy else mt5.ORDER_TYPE_BUY,
-            "price": tick.bid if is_buy else tick.ask,
+            "price": price,
             "deviation": int(payload.get("deviation") or 10),
             "type_filling": mt5.ORDER_FILLING_FOK,
         })
         if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
             raise trade_failed("close_failed", result)
+        publish_execution(result, symbol=position.symbol, volume=volume, price=price)
         return {"closed_ticket": str(result.order), "broker_order_id": str(result.order), "position_id": str(ticket)}
 
     if action == "cancel":
