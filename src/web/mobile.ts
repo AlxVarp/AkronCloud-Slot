@@ -1,6 +1,5 @@
 import type { FastifyInstance } from 'fastify';
 import { MOBILE_HTML } from './mobile.html.js';
-import { DESKTOP_HTML } from './desktop.html.js';
 import { registerVncStaticRoutes } from './vnc-static-routes.js';
 import { registerMt5WsProxy } from './mt5-ws-proxy.js';
 
@@ -51,7 +50,7 @@ export async function registerMobileRoutes(app: FastifyInstance): Promise<void> 
     reply
       .type('text/html; charset=utf-8')
       .header('Cache-Control', 'no-cache, no-store, must-revalidate')
-      .send(DESKTOP_HTML);
+      .send(MOBILE_HTML);
   });
   // 1x1 transparent PNG. Browsers auto-request /favicon.ico on every
   // page load; without this we get a noisy 404 in the console.

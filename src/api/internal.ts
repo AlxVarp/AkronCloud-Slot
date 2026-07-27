@@ -3,6 +3,12 @@ import type { FastifyInstance } from 'fastify';
 import type { Deps } from '../app.js';
 import { validateAccount } from '../validator.js';
 
+// The mobile and desktop wrappers both sync on RFB connect, and browsers can
+// briefly reconnect more than once while KasmVNC settles. Avoid launching
+// duplicate Wine/MT5 validations for the same account in that short window.
+const SYNC_COOLDOWN_MS = 5_000;
+const lastSyncByAccount = new Map<string, number>();
+
 /**
  * Internal endpoints — same-origin only, no JWT required.
  *
@@ -42,8 +48,16 @@ export async function internalRoutes(app: FastifyInstance): Promise<void> {
       broker_login: string;
       previous_status: string;
     }> = [];
+    const skipped: string[] = [];
+    const now = Date.now();
     for (const row of accounts) {
       if (row.status === 'disabled') continue;
+      const previousSync = lastSyncByAccount.get(row.id) ?? 0;
+      if (now - previousSync < SYNC_COOLDOWN_MS) {
+        skipped.push(row.id);
+        continue;
+      }
+      lastSyncByAccount.set(row.id, now);
       triggered.push({
         id: row.id,
         broker_server: row.broker_server,
@@ -55,6 +69,7 @@ export async function internalRoutes(app: FastifyInstance): Promise<void> {
     return {
       triggered_at: Date.now(),
       accounts: triggered,
+      skipped_account_ids: skipped,
       hint:
         accounts.length === 0
           ? 'No accounts yet. Hit Login in /mobile to provision one.'

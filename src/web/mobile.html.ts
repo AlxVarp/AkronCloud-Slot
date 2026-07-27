@@ -202,6 +202,16 @@ export const MOBILE_HTML = `<!DOCTYPE html>
     #keyboard.shift-on .kbrow button {
       text-transform: uppercase;
     }
+
+    /* One adaptive workspace for both routes. On a mouse/keyboard-sized
+       viewport the remote desktop gets all remaining space and the browser's
+       physical keyboard is used; touch controls remain available on phones. */
+    @media (min-width: 760px) and (min-height: 560px) {
+      #keyboard { display: none; }
+      #topbar { padding: 7px 12px; gap: 9px; font-size: 13px; }
+      #topbar .label { font-size: 13px; }
+      #topbar button { min-height: 30px; padding: 4px 10px; }
+    }
   </style>
 </head>
 <body>
@@ -379,14 +389,24 @@ const host = location.host;
 // which pipes bytes to KasmVNC's :3000/websockify. Going to
 // :7777 keeps the WS upgrade inside the slot's port and avoids
 // firewall / port-isolation issues on mobile carriers.
-const wsUrl = 'wss://' + host + '/mt5-ws';
-// For local dev / non-TLS testing, also try ws:// (most browsers
-// will auto-upgrade ws:// on the same host).
-const wsUrlFallback = 'ws://' + host + '/mt5-ws';
+// Match the page protocol. An HTTPS-loaded page cannot open an insecure
+// ws:// socket, so derive the WebSocket scheme from the current origin.
+const wsUrl = (location.protocol === 'https:' ? 'wss://' : 'ws://') + host + '/mt5-ws';
 
 let shift = false;
 const creds = loadCreds();
 let rfb = null;
+let reconnectTimer = null;
+let reconnectAttempt = 0;
+
+function scheduleReconnect() {
+  if (reconnectTimer) return;
+  const delay = Math.min(1000 * Math.pow(2, reconnectAttempt++), 10000);
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    connect();
+  }, delay);
+}
 
 function setStatus(state, msg) {
   statusDot.className = 'status' + (state === 'ok' ? ' ok' : state === 'err' ? ' err' : '');
@@ -394,6 +414,8 @@ function setStatus(state, msg) {
 }
 
 function connect() {
+  if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+  if (rfb) { try { rfb.disconnect(); } catch (e) {} }
   setStatus('', 'connecting to ' + wsUrl + '…');
   placeholder.style.display = 'flex';
   placeholder.textContent = 'Connecting to KasmVNC…';
@@ -416,7 +438,7 @@ function connect() {
   // We pass null for touchInput (the wrapper has its own creds modal that
   // types via rfb.sendKey; no IME on the MT5 canvas itself).
   // 5th positional arg: isPrimaryDisplay = true (was implicit; explicit for clarity).
-  rfb = new RFB(screen, null, wsUrlFallback, {
+  rfb = new RFB(screen, null, wsUrl, {
     background: '#000',
   }, true);
 
@@ -432,33 +454,16 @@ function connect() {
   // weird in-between value (603x885, 1920x920, etc.) which made
   // the MT5 chart tiny in the live phone.
   //
-  // We now:
-  //   - disable resizeSession so the server DOES NOT renegotiate
-  //     on viewport changes (the slot stays at one stable size)
-  //   - force the desktop to 414x896 (portrait iPhone), which
-  //     RFB negotiates once on init via _requestRemoteResize
-  //   - keep scaleViewport+clipViewport so the client scales the
-  //     fixed 414x896 canvas down to fit the phone viewport, with
-  //     letterbox centering via the flex container.
+  // Keep remote resizing disabled. A phone must never resize the shared MT5
+  // desktop for a simultaneously connected desktop user; local scaling is
+  // enough to make the fixed framebuffer usable on a small viewport.
   rfb.resizeSession = false;
-  // We pick 414x440 (portrait iPhone width, short height) instead
-  // of the Xvnc cmdline 1024x768 or a full 414x896. The short
-  // height means the chart window in the visible canvas is bigger
-  // relative to the phone viewport - autoscale fits the desktop
-  // to the phone width (no horizontal letterbox) while keeping the
-  // chart at a comfortable aspect. The previous 414x896 was
-  // correct in count of pixels but made the visible chart look
-  // small on the phone because the empty MT5 desktop below
-  // the chart window ate half the canvas. 414x440 makes the
-  // desktop's aspect (0.94) close to the typical phone's aspect
-  // so there's no big "empty" area on top or bottom.
-  rfb.forcedResolutionX = 414;
-  rfb.forcedResolutionY = 440;
   rfb.scaleViewport = true;
   rfb.clipViewport = true;
   rfb.qualityLevel = 6;
   rfb.compressionLevel = 2;
   rfb.addEventListener('connect', () => {
+    reconnectAttempt = 0;
     setStatus('ok', 'connected to MT5');
     placeholder.style.display = 'none';
     fit();
@@ -478,6 +483,7 @@ function connect() {
     setStatus('err', 'disconnected' + why);
     placeholder.style.display = 'flex';
     placeholder.textContent = 'Disconnected. Tap ↻ to retry.';
+    scheduleReconnect();
   });
   rfb.addEventListener('credentialsrequired', () => {
     setStatus('', 'credentials required (server-side)');

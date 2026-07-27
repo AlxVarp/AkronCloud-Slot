@@ -188,6 +188,17 @@ trading**. The Wine output is normalized before comparison and the Expert
 Advisors tab is selected explicitly (Wine can skip it when cycling tabs with
 `Ctrl+Tab`). No order is placed by this guard.
 
+## Adaptive desktop and mobile workspace
+
+`/desktop` and `/mobile` now serve one RFB implementation. The workspace uses
+the request origin's WebSocket scheme (`wss` under HTTPS, `ws` locally), so it
+does not fail due to mixed content in a TLS deployment. On viewports at least
+760x560 it hides the touch keyboard and gives the MT5 canvas the available
+space; smaller viewports retain the touch controls. The client only scales its
+own canvas and never changes the shared Xvnc/MT5 resolution. Short reconnects
+also coalesce account sync requests for five seconds, avoiding redundant
+Wine/MT5 validation work.
+
 ## Operational checks
 
 ```powershell
