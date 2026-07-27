@@ -63,7 +63,7 @@ export type LoginCallback = () => Promise<void> | void;
  * Returns true if any wmctrl window matches the "logged in" pattern:
  *   - title doesn't contain "Login" (the login modal title)
  *   - title is non-empty and not just whitespace
- *   - title contains ":" (the post-login "Broker: Account" pattern)
+ *   - title carries a numeric account login and broker server
  *
  * We're defensive about wmctrl's exact output format across X servers.
  *
@@ -89,8 +89,6 @@ async function probeLogin(): Promise<[
       env: { ...process.env, DISPLAY: ':0' },
     });
     const lines = stdout.split('\n').filter((l) => l.trim());
-    let mt5Windows = 0;
-    let firstLoggedInTitle: string | undefined;
     for (const line of lines) {
       // wmctrl -lx with default 1-space separators: <id> <desktop>
       // <instance.class> <host> <title words...>. The 3rd field has a
@@ -101,30 +99,21 @@ async function probeLogin(): Promise<[
       const wmClass = parts[2] ?? '';
       const title = parts.slice(4).join(' ').trim();
       if (!/terminal64\.exe/i.test(wmClass)) continue;
-      mt5Windows++;
       if (!title) continue;
       // Pre-login: "Login" or "MetaTrader 5 - Login"
       if (/^Login\b|^MetaTrader 5 - Login\b|^\s*Login\s*$/i.test(title)) {
         return [false, undefined];
       }
-      // Post-login: any of these patterns
-      if (/^MetaTrader 5/.test(title)) {
-        if (!firstLoggedInTitle) firstLoggedInTitle = title;
-        return [true, parseAccountTitle(title)];
-      }
-      if (title.includes(':')) {
-        if (!firstLoggedInTitle) firstLoggedInTitle = title;
-        return [true, parseAccountTitle(title)];
-      }
-      if (/^Account:\s/i.test(title)) {
-        if (!firstLoggedInTitle) firstLoggedInTitle = title;
-        return [true, parseAccountTitle(title)];
+      // A chart title can be "MetaTrader 5 - EURUSD,H1" before the
+      // user logs in.  Do not mistake it for an authenticated session:
+      // only an extractable account login proves that MT5 is logged in.
+      const account = parseAccountTitle(title);
+      if (account.login) {
+        return [true, account];
       }
     }
-    // Fallback: 2+ MT5 windows and none looks like a login dialog
-    if (mt5Windows >= 2) {
-      return [true, firstLoggedInTitle ? parseAccountTitle(firstLoggedInTitle) : undefined];
-    }
+    // Do not fall back merely because several terminal windows exist.
+    // Fresh MT5 opens chart/toolbox windows before authentication.
     return [false, undefined];
   } catch (e) {
     log.debug({ err: (e as Error).message }, 'isLoggedIn probe failed');
