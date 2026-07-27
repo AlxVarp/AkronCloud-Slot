@@ -8,25 +8,22 @@
 set -u
 
 LOG=/var/log/ensure-autotrading.log
-WINE=/opt/wine-stable/bin/wine
-PY=/config/.wine/drive_c/Python39/python.exe
-
 log() { printf '[%s] %s\n' "$(date -Iseconds)" "$*" >> "$LOG"; }
 
 logged_in_terminal() {
-  local active main title
-  active=$(s6-setuidgid abc env DISPLAY=:0 xdotool getactivewindow 2>/dev/null || true)
-  main=$(s6-setuidgid abc env DISPLAY=:0 xdotool search --name 'MetaTrader 5' 2>/dev/null | tail -n 1 || true)
-  [[ -n "$active" && "$active" == "$main" ]] || return 1
+  local main title
+  main=$(s6-setuidgid abc env DISPLAY=:0 xdotool search --name '^MetaTrader 5 - ' 2>/dev/null | tail -n 1 || true)
+  [[ -n "$main" ]] || return 1
   title=$(s6-setuidgid abc env DISPLAY=:0 xdotool getwindowname "$main" 2>/dev/null || true)
-  # Before broker login MT5's title begins with its product name. A connected
-  # broker title begins with the account number, e.g. "12345 - Deriv-Demo".
-  [[ "$title" =~ ^[0-9]+[[:space:]]- ]]
+  # A live workspace is titled "MetaTrader 5 - <account mode> - <symbol>,<TF>".
+  # Login and company-search dialogs have their own titles, so this avoids
+  # stealing focus while a user is authenticating.
+  [[ "$title" =~ ^MetaTrader\ 5\ -\ .+\ -\ .+,.+ ]]
 }
 
 enable_with_ui() {
   local mt5 options X Y WIDTH HEIGHT
-  mt5=$(s6-setuidgid abc env DISPLAY=:0 xdotool search --name 'MetaTrader 5' 2>/dev/null | tail -n 1 || true)
+  mt5=$(s6-setuidgid abc env DISPLAY=:0 xdotool search --name '^MetaTrader 5 - ' 2>/dev/null | tail -n 1 || true)
   [[ -n "$mt5" ]] || return 1
   s6-setuidgid abc env DISPLAY=:0 xdotool windowactivate --sync "$mt5" key Escape key ctrl+o
   sleep 1
@@ -49,7 +46,7 @@ last_title=''
 log 'post-login AutoTrading guard started'
 while true; do
   if logged_in_terminal; then
-    title=$(s6-setuidgid abc env DISPLAY=:0 xdotool getwindowname "$(s6-setuidgid abc env DISPLAY=:0 xdotool getactivewindow)" 2>/dev/null || true)
+    title=$(s6-setuidgid abc env DISPLAY=:0 xdotool getwindowname "$(s6-setuidgid abc env DISPLAY=:0 xdotool search --name '^MetaTrader 5 - ' 2>/dev/null | tail -n 1)" 2>/dev/null || true)
     # One attempt per newly authenticated account; avoid interfering with an
     # already operational desktop or repeatedly opening Options on failure.
     if [[ "$title" != "$last_title" ]]; then
