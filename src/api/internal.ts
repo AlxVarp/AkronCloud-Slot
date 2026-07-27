@@ -27,6 +27,20 @@ export async function internalRoutes(app: FastifyInstance): Promise<void> {
   app.get('/internal/ping', async () => ({ ok: true, ts: Date.now() }));
 
   /**
+   * Read-only visual-session gate. This intentionally exposes no account
+   * identifiers or balances: the web VNC wrapper only needs to know whether
+   * a validated MT5 account is operational before it detaches its canvas.
+   */
+  app.get('/internal/operational', async (req) => {
+    const deps = (req.server as unknown as { deps: Deps }).deps;
+    const accounts = deps.accounts.list(deps.cfg.tenantId);
+    return {
+      operational: accounts.some((account) => account.status === 'active'),
+      checked_at: Date.now(),
+    };
+  });
+
+  /**
    * POST /internal/sync — re-validate every active account against the
    * live MT5 session. Same effect as POST /v1/sync but skips the JWT
    * check and operates on the slot's configured tenant.

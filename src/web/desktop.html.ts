@@ -48,6 +48,7 @@ export const DESKTOP_HTML = `<!DOCTYPE html>
     #screen > canvas { display: block; }
 
     #bar {
+      display: none;
       flex-shrink: 0;
       display: flex; align-items: center; gap: 8px;
       height: 32px;
@@ -74,10 +75,15 @@ export const DESKTOP_HTML = `<!DOCTYPE html>
     }
     #bar button:hover  { background: #21262d; }
     #bar button:active { transform: translateY(1px); }
-    #syncFab { position: fixed; right: 18px; bottom: 48px; z-index: 10;
+    #syncFab { position: fixed; right: 18px; bottom: 18px; z-index: 10;
       border: 0; border-radius: 999px; padding: 11px 16px; cursor: pointer;
       background: #238636; color: #fff; font-weight: 700; box-shadow: 0 4px 16px #0009; }
     #syncFab:disabled { opacity: .65; cursor: wait; }
+    #completed {
+      display: none; position: fixed; inset: 0; place-items: center;
+      background: #0d1117; color: #c9d1d9; font: 600 16px/1.45 system-ui, sans-serif;
+      text-align: center; padding: 24px;
+    }
   </style>
 </head>
 <body>
@@ -85,7 +91,8 @@ export const DESKTOP_HTML = `<!DOCTYPE html>
   <div id="screen">
     <div id="placeholder">connecting…</div>
   </div>
-  <button id="syncFab" type="button" title="Sincronizar la cuenta MT5 después de iniciar sesión">↻ Sincronizar MT5</button>
+  <button id="syncFab" type="button" title="Confirmar la cuenta MT5 y cerrar el visor">Sync</button>
+  <div id="completed">Cuenta sincronizada.<br>La sesión visual se cerró; MT5 y la API continúan operativos.</div>
   <div id="bar">
     <span class="dot" id="dot"></span>
     <span class="stat" id="conn">disconnected</span>
@@ -128,6 +135,7 @@ const clicksEl = document.getElementById('clicks');
 const rfbClicksEl = document.getElementById('rfbClicks');
 const lastEl = document.getElementById('last');
 const syncFab = document.getElementById('syncFab');
+const completed = document.getElementById('completed');
 
 // KasmVNC's RFB fork does not expose getCanvas(). The canvas is
 // always the only <canvas> under #screen (we wipe screen.innerHTML
@@ -271,9 +279,27 @@ syncFab.addEventListener('click', async () => {
   try {
     const r = await fetch('/internal/sync', { method: 'POST' });
     if (!r.ok) throw new Error('HTTP ' + r.status);
-    syncFab.textContent = '✓ Sincronizado';
-  } catch (_) { syncFab.textContent = '✕ Reintentar sync'; }
-  setTimeout(() => { syncFab.disabled = false; syncFab.textContent = '↻ Sincronizar MT5'; }, 2200);
+    const deadline = Date.now() + 20_000;
+    let operational = false;
+    while (Date.now() < deadline) {
+      const status = await fetch('/internal/operational', { cache: 'no-store' });
+      if (status.ok && (await status.json()).operational === true) {
+        operational = true;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 750));
+    }
+    if (!operational) throw new Error('MT5 not operational yet');
+    // Detach only the browser's RFB connection. The X server, terminal,
+    // AutoTrading guard and API bridges remain running in the container.
+    disconnect();
+    screen.style.display = 'none';
+    syncFab.style.display = 'none';
+    completed.style.display = 'grid';
+  } catch (_) {
+    syncFab.disabled = false;
+    syncFab.textContent = 'Reintentar Sync';
+  }
 });
 
 // window-level keydown → forward to the canvas so MT5 receives

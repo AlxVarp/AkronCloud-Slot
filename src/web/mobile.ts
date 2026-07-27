@@ -1,6 +1,5 @@
 import type { FastifyInstance } from 'fastify';
 import { DESKTOP_HTML } from './desktop.html.js';
-import { MOBILE_HTML } from './mobile.html.js';
 import { registerVncStaticRoutes } from './vnc-static-routes.js';
 import { registerMt5WsProxy } from './mt5-ws-proxy.js';
 
@@ -32,11 +31,14 @@ import { registerMt5WsProxy } from './mt5-ws-proxy.js';
 export async function registerMobileRoutes(app: FastifyInstance): Promise<void> {
   await registerVncStaticRoutes(app);
   await registerMt5WsProxy(app);
-  app.get('/mobile', async (_req, reply) => {
+  app.get('/terminal', async (_req, reply) => {
     reply
       .type('text/html; charset=utf-8')
       .header('Cache-Control', 'no-cache, no-store, must-revalidate')
-      .send(MOBILE_HTML);
+      .send(DESKTOP_HTML);
+  });
+  app.get('/mobile', async (_req, reply) => {
+    return reply.redirect(308, '/terminal');
   });
   // /desktop — desktop-friendly VNC wrapper for KasmVNC.
   // /mobile is the proven-working template; /desktop is a thinner
@@ -48,10 +50,7 @@ export async function registerMobileRoutes(app: FastifyInstance): Promise<void> 
   // the canvas. (We removed the iOS / mobile-only padding and
   // credential-fill UI for desktop.)
   app.get('/desktop', async (_req, reply) => {
-    reply
-      .type('text/html; charset=utf-8')
-      .header('Cache-Control', 'no-cache, no-store, must-revalidate')
-      .send(DESKTOP_HTML);
+    return reply.redirect(308, '/terminal');
   });
   // 1x1 transparent PNG. Browsers auto-request /favicon.ico on every
   // page load; without this we get a noisy 404 in the console.
