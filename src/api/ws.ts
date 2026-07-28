@@ -67,12 +67,13 @@ async function authenticate(
 }
 
 /** Resolve the configured accountRef for the streaming session. */
-function resolveAccountRef(deps: Deps): {
+async function resolveAccountRef(deps: Deps): Promise<{
   accountRef: string;
   brokerLogin: string;
-} {
+}> {
   const tenantId = deps.cfg.tenantId;
-  const row = deps.accounts.list(tenantId)[0];
+  const rows = deps.accounts.list(tenantId).filter((row) => row.status !== 'disabled');
+  const row = rows[0];
   if (!row || row.status === 'disabled') {
     throw new ProblemError({
       status: 404,
@@ -82,6 +83,19 @@ function resolveAccountRef(deps: Deps): {
         'The slot has no active broker account configured. Log in ' +
         'through the mobile wrapper to provision one, then reconnect.',
     });
+  }
+  // A reused desktop slot can retain historical accounts. Resolve the live
+  // terminal login rather than streaming the first row in SQLite.
+  for (const candidate of rows) {
+    const candidateRef = `${deps.connector.id}-${candidate.broker_server}-${candidate.broker_login}`;
+    try {
+      const live = await deps.connector.getAccount(candidateRef);
+      if (String(live.login) === candidate.broker_login) {
+        return { accountRef: candidateRef, brokerLogin: candidate.broker_login };
+      }
+    } catch {
+      // Fall back below if the terminal is briefly unavailable.
+    }
   }
   const accountRef = `${deps.connector.id}-${row.broker_server}-${row.broker_login}`;
   return { accountRef, brokerLogin: row.broker_login };
@@ -99,7 +113,7 @@ export async function wsRoutes(app: FastifyInstance): Promise<void> {
     let accountRef: string;
     try {
       await authenticate(deps, req);
-      accountRef = resolveAccountRef(deps).accountRef;
+      accountRef = (await resolveAccountRef(deps)).accountRef;
     } catch (e) {
       const p = e instanceof ProblemError
         ? e.problem

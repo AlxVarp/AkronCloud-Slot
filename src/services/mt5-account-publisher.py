@@ -323,7 +323,7 @@ class TradeEventPublisher:
             "tp": float(getattr(row, "tp", 0) or 0),
         }
 
-    def poll(self, client: SlotClient) -> None:
+    def poll(self, client: SlotClient, account: dict[str, Any]) -> None:
         try:
             raw_orders = mt5.orders_get()
             raw_positions = mt5.positions_get()
@@ -341,23 +341,25 @@ class TradeEventPublisher:
             log.info("trade event baseline captured: orders=%d positions=%d", len(orders), len(positions))
             return
 
+        identity = {"login": account["login"], "server": account["server"]}
+
         for ticket, current in orders.items():
             previous = self.orders.get(ticket)
             if previous is None:
-                client.send(frame("order_state", {**current, "status": "pending", "event": "created"}))
+                client.send(frame("order_state", {**identity, **current, "status": "pending", "event": "created"}))
             elif previous != current:
-                client.send(frame("order_state", {**current, "status": "pending", "event": "updated"}))
+                client.send(frame("order_state", {**identity, **current, "status": "pending", "event": "updated"}))
         for ticket, previous in self.orders.items():
             if ticket not in orders:
-                client.send(frame("order_state", {**previous, "status": "cancelled", "event": "deleted"}))
+                client.send(frame("order_state", {**identity, **previous, "status": "cancelled", "event": "deleted"}))
 
         for ticket, current in positions.items():
             previous = self.positions.get(ticket)
             if previous is None or previous != current:
-                client.send(frame("position", {**current, "event": "opened" if previous is None else "updated"}))
+                client.send(frame("position", {**identity, **current, "event": "opened" if previous is None else "updated"}))
         for ticket, previous in self.positions.items():
             if ticket not in positions:
-                client.send(frame("position", {**previous, "event": "closed"}))
+                client.send(frame("position", {**identity, **previous, "event": "closed"}))
         self.orders, self.positions = orders, positions
 
 
@@ -506,7 +508,7 @@ def loop() -> int:
                             data["login"], data["server"], data["balance"], data["equity"],
                         )
 
-                trade_events.poll(client)
+                trade_events.poll(client, data)
 
         # Heartbeat every 30s — keep the TCP socket warm and signal liveness
         elif now - last_heartbeat >= 30.0:
