@@ -2033,13 +2033,6 @@ export default class RFB extends EventTargetMixin {
         this.sendKey(keysym, code, down);
     }
 
-    // Convert browser CSS pixels to MT5 framebuffer pixels. KasmVNC scales the
-    // canvas with CSS, while VNC pointer messages always use framebuffer space.
-    _clientToServer(x, y) {
-        const pos = clientToElement(x, y, this._canvas);
-        return { x: this._display.absX(pos.x), y: this._display.absY(pos.y) };
-    }
-
     _handleMouseOut(ev) {
         if (ev.toElement !== null && ev.relatedTarget === null && ev.fromElement === null) {
             //mouse was outside of the window and just came in, this is our chance to do things
@@ -2108,7 +2101,8 @@ export default class RFB extends EventTargetMixin {
                 y: this._mousePos.y + ev.movementY,
             };
         } else {
-            pos = this._clientToServer(ev.clientX, ev.clientY);
+            pos = clientToElement(ev.clientX, ev.clientY,
+                                  this._canvas);
         }
 
         this._mouseLastScreenIndex = this._display.screenIndex;
@@ -2384,7 +2378,7 @@ export default class RFB extends EventTargetMixin {
             dY *= WHEEL_LINE_HEIGHT;
         }
 
-        const pointer = this._clientToServer(ev.clientX, ev.clientY);
+        const pointer = clientToElement(ev.clientX, ev.clientY, this._canvas);
         this._sendScroll(pointer.x, pointer.y, dX, dY);
     }
 
@@ -2400,7 +2394,8 @@ export default class RFB extends EventTargetMixin {
     }
 
     _handleTapEvent(ev, bmask) {
-        let pos = this._clientToServer(ev.detail.clientX, ev.detail.clientY);
+        let pos = clientToElement(ev.detail.clientX, ev.detail.clientY,
+                                  this._canvas);
 
         // If the user quickly taps multiple times we assume they meant to
         // hit the same spot, so slightly adjust coordinates
@@ -2413,8 +2408,9 @@ export default class RFB extends EventTargetMixin {
             let distance = Math.hypot(dx, dy);
 
             if (distance < DOUBLE_TAP_THRESHOLD) {
-                pos = this._clientToServer(this._gestureFirstDoubleTapEv.detail.clientX,
-                                           this._gestureFirstDoubleTapEv.detail.clientY);
+                pos = clientToElement(this._gestureFirstDoubleTapEv.detail.clientX,
+                                      this._gestureFirstDoubleTapEv.detail.clientY,
+                                      this._canvas);
             } else {
                 this._gestureFirstDoubleTapEv = ev;
             }
@@ -2443,7 +2439,8 @@ export default class RFB extends EventTargetMixin {
     _handleGesture(ev) {
         let magnitude;
 
-        let pos = this._clientToServer(ev.detail.clientX, ev.detail.clientY);
+        let pos = clientToElement(ev.detail.clientX, ev.detail.clientY,
+                                  this._canvas);
         switch (ev.type) {
             case 'gesturestart':
                 switch (ev.detail.type) {
