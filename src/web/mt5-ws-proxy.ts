@@ -1,7 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import WebSocket from 'ws';
 import { log } from '../log.js';
-import { visualSessionLocked } from '../services/visual-session-lock.js';
 
 /**
  * GET /mt5-ws — WebSocket proxy from the slot to KasmVNC's
@@ -35,10 +34,6 @@ export async function registerMt5WsProxy(app: FastifyInstance): Promise<void> {
   app.register(async (instance) => {
     const handleWs = (socket: any, req: any) => {
       const client = socket;
-      if (visualSessionLocked()) {
-        client.close(1008, 'terminal synchronized');
-        return;
-      }
 
       // Spawn the upstream WS to KasmVNC. Same path KasmVNC's
       // bundled noVNC uses.
