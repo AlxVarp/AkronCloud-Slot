@@ -492,15 +492,7 @@ function connect() {
     if (canvas) {
       canvas.tabIndex = 0;
       canvas.style.cursor = 'none';
-      canvas.addEventListener('pointerdown', (event) => {
-        canvas.focus();
-        if (event.pointerType !== 'touch' || !event.isPrimary || !rfb || !rfb._display) return;
-        const x = rfb._display.absX(event.offsetX);
-        const y = rfb._display.absY(event.offsetY);
-        rfb.sendPointerEvent(x, y, 1);
-        canvas.addEventListener('pointerup', () => rfb.sendPointerEvent(x, y, 0), { once: true });
-        canvas.addEventListener('pointercancel', () => rfb.sendPointerEvent(x, y, 0), { once: true });
-      }, { passive: true });
+      canvas.addEventListener('pointerdown', () => canvas.focus(), { passive: true });
       canvas.focus();
     }
     fit();
