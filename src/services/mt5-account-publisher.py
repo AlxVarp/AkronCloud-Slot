@@ -143,8 +143,19 @@ def command_result(action: str, payload: dict[str, Any]) -> dict[str, Any]:
     if action == "symbols":
         pattern = str(payload.get("pattern") or "").lower()
         symbols = mt5.symbols_get() or ()
-        names = [s.name for s in symbols if not pattern or pattern in s.name.lower()]
-        return {"count": len(names), "symbols": names}
+        result = [
+            {
+                "symbol": s.name,
+                "digits": int(getattr(s, "digits", 5) or 5),
+                "min_lot": float(getattr(s, "volume_min", 0.01) or 0.01),
+                "max_lot": float(getattr(s, "volume_max", 100) or 100),
+                "lot_step": float(getattr(s, "volume_step", 0.01) or 0.01),
+                "currency": str(getattr(s, "currency_profit", "USD") or "USD"),
+            }
+            for s in symbols
+            if not pattern or pattern in s.name.lower()
+        ]
+        return {"count": len(result), "symbols": result}
 
     if action == "history":
         end = float(payload.get("to") or time.time())
