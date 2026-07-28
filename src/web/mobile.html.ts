@@ -43,7 +43,9 @@ export const MOBILE_HTML = `<!DOCTYPE html>
       overscroll-behavior: none;
       -webkit-tap-highlight-color: transparent;
     }
-    #app { display: flex; flex-direction: column; height: 100dvh; height: 100vh; }
+    /* Keep the app inside the visible viewport when mobile browser chrome
+       expands or collapses. The first declaration is the fallback. */
+    #app { display: flex; flex-direction: column; height: 100vh; height: 100dvh; }
 
     /* Slim topbar: dot + label + 3 icon-sized buttons.
        Goal: maximize screen area for the VNC canvas. */
@@ -191,6 +193,15 @@ export const MOBILE_HTML = `<!DOCTYPE html>
       font-family: ui-monospace, "SF Mono", monospace;
       cursor: pointer;
       touch-action: manipulation;
+    }
+    /* Safari's floating bottom controls are drawn over the visual viewport
+       and are not always reported by safe-area-inset-bottom. Reserve room so
+       they cannot cover the lower virtual-key rows. This follows the compact
+       keyboard rule so it wins in the CSS cascade. */
+    @supports (-webkit-touch-callout: none) {
+      #keyboard {
+        padding-bottom: calc(max(6px, env(safe-area-inset-bottom)) + 72px);
+      }
     }
     .kbrow button:active { background: #21262d; }
     .kbrow button.wide { flex: 3; }
