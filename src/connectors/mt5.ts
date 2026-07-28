@@ -698,13 +698,6 @@ export class Mt5Connector implements BrokerConnector {
       log.info('mt5 TCP: MQL5 service reports startup');
       return;
     }
-    if (evt.kind !== 'fill'
-     && evt.kind !== 'order_state'
-     && evt.kind !== 'position'
-     && evt.kind !== 'account') {
-      log.debug({ kind: evt.kind }, 'mt5 TCP: unhandled event');
-      return;
-    }
     // Phase C-real: route by the resolved account that Mt5TcpServer
     // already computed via resolveAccount(broker_login). Falls back to
     // (1) findRefByLogin for events with a payload login where the
