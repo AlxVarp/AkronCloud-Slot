@@ -531,7 +531,7 @@ function connect() {
   const _origUpdateScale = rfb._updateScale.bind(rfb);
   rfb._updateScale = function () {
     _origUpdateScale();
-    captureFitScale();
+    if (userZoom !== 100) applyFocalZoom(userZoom / 100, lastTap);
   };
   rfb.addEventListener('connect', () => {
     reconnectAttempt = 0;
@@ -551,13 +551,10 @@ function connect() {
         // Store the tap as a framebuffer coordinate (not CSS canvas
         // pixels) so the anchor survives canvas resizes.
         if (rfb && rfb._display && rfb._display._scale > 0) {
-          const x = rfb._display.absX(event.offsetX);
-          const y = rfb._display.absY(event.offsetY);
-          lastTap = { x, y };
-          if (event.pointerType === 'touch' && event.isPrimary) {
-            rfb.sendPointerEvent(x, y, 1);
-            canvas.addEventListener('pointerup', () => rfb.sendPointerEvent(x, y, 0), { once: true });
-          }
+          lastTap = {
+            x: rfb._display.absX(event.offsetX),
+            y: rfb._display.absY(event.offsetY),
+          };
         }
       }, { passive: true });
       canvas.focus();
@@ -596,6 +593,11 @@ function fit() {
     try { rfb._updateScale(); } catch (e) {}
     captureFitScale();
   }
+  // Always refresh the framebuffer so stale pixels redraw after a
+  // reconnect or a viewport change.
+  try {
+    RFB.messages.fbUpdateRequest(rfb._sock, false, 0, 0, rfb._fbWidth, rfb._fbHeight);
+  } catch (e) {}
 }
 
 // RFB exposes these three settings specifically for viewport navigation.
@@ -657,11 +659,16 @@ function applyFocalZoom(factor, anchor) {
   vp.width = v.width; vp.height = v.height;
   vp.x2 = v.x + v.serverWidth; vp.y2 = v.y + v.serverHeight;
   vp.containerWidth = cW; vp.containerHeight = cH;
-  // Let Display preserve pixels while it updates its native viewport.
-  d.viewportChangeSize(v.serverWidth, v.serverHeight);
+  // Canvas pixel size = framebuffer window. Setting width/height
+  // clears the canvas; the next fbUpdateRequest repaints it.
+  if (rfb._canvas.width !== v.serverWidth) rfb._canvas.width = v.serverWidth;
+  if (rfb._canvas.height !== v.serverHeight) rfb._canvas.height = v.serverHeight;
   // _rescale(factor) sets _scale = factor and canvas.style.{width,height}
   // to factor * vp.serverWidth so the canvas fills the container.
   d._rescale(factor);
+  try {
+    RFB.messages.fbUpdateRequest(rfb._sock, false, 0, 0, fbW, fbH);
+  } catch (e) {}
 }
 
 function setZoom(percent) {
