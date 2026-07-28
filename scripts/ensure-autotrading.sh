@@ -10,20 +10,24 @@ set -u
 LOG=/var/log/ensure-autotrading.log
 log() { printf '[%s] %s\n' "$(date -Iseconds)" "$*" >> "$LOG"; }
 
+main_terminal_window() {
+  local window title
+  while read -r window; do
+    title=$(s6-setuidgid abc env DISPLAY=:0 xdotool getwindowname "$window" 2>/dev/null || true)
+    # A connected MT5 workspace ends in a chart symbol/timeframe (for example
+    # "... - EURUSD,H1"). Broker builds use account titles, not a fixed name.
+    [[ "$title" =~ ,(M[0-9]+|H[0-9]+|D[0-9]+|W[0-9]+|MN[0-9]+)$ ]] && { printf '%s' "$window"; return 0; }
+  done < <(s6-setuidgid abc env DISPLAY=:0 xdotool search --name . 2>/dev/null || true)
+  return 1
+}
+
 logged_in_terminal() {
-  local main title
-  main=$(s6-setuidgid abc env DISPLAY=:0 xdotool search --name '^MetaTrader 5 - ' 2>/dev/null | tail -n 1 || true)
-  [[ -n "$main" ]] || return 1
-  title=$(s6-setuidgid abc env DISPLAY=:0 xdotool getwindowname "$main" 2>/dev/null || true)
-  # A live workspace is titled "MetaTrader 5 - <account mode> - <symbol>,<TF>".
-  # Login and company-search dialogs have their own titles, so this avoids
-  # stealing focus while a user is authenticating.
-  [[ "$title" =~ ^MetaTrader\ 5\ -\ .+\ -\ .+,.+ ]]
+  [[ -n "$(main_terminal_window)" ]]
 }
 
 enable_with_ui() {
   local mt5 options X Y WIDTH HEIGHT
-  mt5=$(s6-setuidgid abc env DISPLAY=:0 xdotool search --name '^MetaTrader 5 - ' 2>/dev/null | tail -n 1 || true)
+  mt5=$(main_terminal_window || true)
   [[ -n "$mt5" ]] || return 1
   s6-setuidgid abc env DISPLAY=:0 xdotool windowactivate --sync "$mt5" key Escape key ctrl+o
   sleep 1
@@ -46,7 +50,7 @@ last_title=''
 log 'post-login AutoTrading guard started'
 while true; do
   if logged_in_terminal; then
-    title=$(s6-setuidgid abc env DISPLAY=:0 xdotool getwindowname "$(s6-setuidgid abc env DISPLAY=:0 xdotool search --name '^MetaTrader 5 - ' 2>/dev/null | tail -n 1)" 2>/dev/null || true)
+    title=$(s6-setuidgid abc env DISPLAY=:0 xdotool getwindowname "$(main_terminal_window)" 2>/dev/null || true)
     # One attempt per newly authenticated account; avoid interfering with an
     # already operational desktop or repeatedly opening Options on failure.
     if [[ "$title" != "$last_title" ]]; then
