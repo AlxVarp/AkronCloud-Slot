@@ -73,6 +73,7 @@ export async function registerMt5WsProxy(app: FastifyInstance): Promise<void> {
       let clientOpen = true;
       let upstreamOpen = false;
       const clientFrameTypes = new Map<number, number>();
+      const pointerSamples: string[] = [];
       // RFB sends setup and input as binary frames. The browser can emit a
       // frame immediately after opening its side of the proxy, while the
       // server-side connection to KasmVNC is still handshaking. Dropping
@@ -144,6 +145,9 @@ export async function registerMt5WsProxy(app: FastifyInstance): Promise<void> {
         const firstByte = frame[0];
         if (isBinary && firstByte !== undefined) {
           clientFrameTypes.set(firstByte, (clientFrameTypes.get(firstByte) ?? 0) + 1);
+          if (firstByte === 5 && frame.length >= 6 && pointerSamples.length < 24) {
+            pointerSamples.push(`${frame[1]}@${frame.readUInt16BE(2)},${frame.readUInt16BE(4)}`);
+          }
         }
         forwardToUpstream(data, isBinary);
       });
@@ -153,6 +157,7 @@ export async function registerMt5WsProxy(app: FastifyInstance): Promise<void> {
           code,
           reason: reason.toString(),
           frame_types: Object.fromEntries(clientFrameTypes),
+          pointer_samples: pointerSamples,
         }, 'mt5-ws client closed');
         try { upstream.close(); } catch (err) { /* ignore */ }
         clientOpen = false;
