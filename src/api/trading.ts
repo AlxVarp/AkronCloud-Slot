@@ -349,7 +349,6 @@ export async function tradingRoutes(app: FastifyInstance): Promise<void> {
           req.params.id,
           body.sl ?? null,
           body.tp ?? null,
-          body.price ?? null,
         ),
       );
     },
@@ -367,6 +366,7 @@ export async function tradingRoutes(app: FastifyInstance): Promise<void> {
           req.params.id,
           body.sl ?? null,
           body.tp ?? null,
+          body.price ?? null,
         ),
       );
     },
