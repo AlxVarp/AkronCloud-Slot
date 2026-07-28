@@ -523,6 +523,16 @@ function connect() {
   rfb.clipViewport = true;
   rfb.qualityLevel = 6;
   rfb.compressionLevel = 2;
+  // Per-instance hook: RFB's _windowResize handler schedules an rAF
+  // that runs _screenSize + _updateClip + _updateScale, which resets
+  // vp.* to the fit state and clobbers our zoom on rotation or virtual
+  // keyboard open/close. Re-apply the focal zoom afterwards so the
+  // slider survives every layout change.
+  const _origUpdateScale = rfb._updateScale.bind(rfb);
+  rfb._updateScale = function () {
+    _origUpdateScale();
+    if (userZoom !== 100) applyFocalZoom(userZoom / 100, lastTap);
+  };
   rfb.addEventListener('connect', () => {
     reconnectAttempt = 0;
     setStatus('ok', 'connected to MT5');
@@ -538,7 +548,14 @@ function connect() {
       canvas.style.cursor = 'none';
       canvas.addEventListener('pointerdown', (event) => {
         canvas.focus();
-        lastTap = { x: event.offsetX, y: event.offsetY };
+        // Store the tap as a framebuffer coordinate (not CSS canvas
+        // pixels) so the anchor survives canvas resizes.
+        if (rfb && rfb._display && rfb._display._scale > 0) {
+          lastTap = {
+            x: rfb._display.absX(event.offsetX),
+            y: rfb._display.absY(event.offsetY),
+          };
+        }
       }, { passive: true });
       canvas.focus();
     }
@@ -597,24 +614,68 @@ function updateZoomLabel() {
   if (label) label.textContent = userZoom + '%';
 }
 
+// Pure focal-zoom math (testable). Inlined here so the wrapper has
+// zero runtime dependency on the Node-side module graph.
+const computeZoomViewport = function (factor, anchor, containerWidth, containerHeight, fbWidth, fbHeight) {
+  const f = Math.max(1, factor);
+  const cW = Math.max(1, Math.floor(containerWidth));
+  const cH = Math.max(1, Math.floor(containerHeight));
+  const fbW = Math.max(1, Math.floor(fbWidth));
+  const fbH = Math.max(1, Math.floor(fbHeight));
+  const winW = Math.min(fbW, Math.floor(cW / f));
+  const winH = Math.min(fbH, Math.floor(cH / f));
+  const ax = Math.max(0, Math.min(anchor.x, fbW - 1));
+  const ay = Math.max(0, Math.min(anchor.y, fbH - 1));
+  let x = Math.round(ax - winW / 2);
+  let y = Math.round(ay - winH / 2);
+  if (x < 0) x = 0;
+  if (y < 0) y = 0;
+  if (x + winW > fbW) x = fbW - winW;
+  if (y + winH > fbH) y = fbH - winH;
+  if (x < 0) x = 0;
+  if (y < 0) y = 0;
+  return { x: x, y: y, width: winW, height: winH, serverWidth: winW, serverHeight: winH };
+};
+
+function applyFocalZoom(factor, anchor) {
+  if (!rfb || !rfb._display) return;
+  const d = rfb._display;
+  const vp = d._screens[0];
+  const fbW = d._fbWidth, fbH = d._fbHeight;
+  if (fbW <= 0 || fbH <= 0) return;
+  const parent = rfb._canvas && rfb._canvas.parentNode;
+  if (!parent) return;
+  const cW = parent.offsetWidth, cH = parent.offsetHeight;
+  if (cW <= 0 || cH <= 0) return;
+  const a = anchor || {
+    x: vp.x + vp.width / 2,
+    y: vp.y + vp.height / 2,
+  };
+  const v = computeZoomViewport(factor, a, cW, cH, fbW, fbH);
+  // computeZoomViewport centres the new window on  (clamped), so
+  // assigning vp.x/vp.y here is enough to anchor the focal point.
+  vp.x = v.x; vp.y = v.y;
+  vp.serverWidth = v.serverWidth; vp.serverHeight = v.serverHeight;
+  vp.width = v.width; vp.height = v.height;
+  vp.x2 = v.x + v.serverWidth; vp.y2 = v.y + v.serverHeight;
+  vp.containerWidth = cW; vp.containerHeight = cH;
+  // Canvas pixel size = framebuffer window. Setting width/height
+  // clears the canvas; the next fbUpdateRequest repaints it.
+  if (rfb._canvas.width !== v.serverWidth) rfb._canvas.width = v.serverWidth;
+  if (rfb._canvas.height !== v.serverHeight) rfb._canvas.height = v.serverHeight;
+  // _rescale(factor) sets _scale = factor and canvas.style.{width,height}
+  // to factor * vp.serverWidth so the canvas fills the container.
+  d._rescale(factor);
+  try {
+    RFB.messages.fbUpdateRequest(rfb._sock, false, 0, 0, fbW, fbH);
+  } catch (e) {}
+}
+
 function setZoom(percent) {
   if (!rfb) return;
   userZoom = Math.max(50, Math.min(300, Math.round(percent)));
   updateZoomLabel();
-  rfb.scaleViewport = false;
-  rfb.clipViewport = true;
-  rfb.dragViewport = false;
-  if (fitScale <= 0) fitScale = 1.0;
-  const newScale = fitScale * (userZoom / 100);
-  const oldScale = rfb._display._scale || fitScale;
-  rfb._display.scale = newScale;
-  if (lastTap) {
-    const dx = lastTap.x * (1 / oldScale - 1 / newScale);
-    const dy = lastTap.y * (1 / oldScale - 1 / newScale);
-    if (Math.abs(dx) > 0.01 || Math.abs(dy) > 0.01) {
-      try { rfb._display.viewportChangePos(dx, dy); } catch (e) {}
-    }
-  }
+  applyFocalZoom(userZoom / 100, lastTap);
 }
 
 function resetZoom() {
