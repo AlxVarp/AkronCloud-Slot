@@ -93,17 +93,19 @@ const ModifyOrderSchema = z
 
 /**
  * Resolve the single configured account for this slot. The slot is
- * single-tenant; the first active account under `cfg.tenantId` wins.
+ * single-tenant; resolve the terminal's live account when historical rows
+ * remain after a desktop session is reused.
  * Throws ProblemError(404) if no account exists yet — callers must
  * onboard via the mobile wrapper first.
  */
-function resolveAccountRef(deps: Deps): {
+async function resolveAccountRef(deps: Deps): Promise<{
   accountRef: string;
   brokerLogin: string;
-} {
+}> {
   const tenantId = deps.cfg.tenantId;
-  const row = deps.accounts.list(tenantId)[0];
-  if (!row || row.status === 'disabled') {
+  const rows = deps.accounts.list(tenantId).filter((row) => row.status !== 'disabled');
+  const row = rows[0];
+  if (!row) {
     throw new ProblemError({
       status: 404,
       code: 'NOT_FOUND',
@@ -112,6 +114,17 @@ function resolveAccountRef(deps: Deps): {
         'The slot has no active broker account configured. Log in ' +
         'through the mobile wrapper to provision one, then retry.',
     });
+  }
+  for (const candidate of rows) {
+    const accountRef = `${deps.connector.id}-${candidate.broker_server}-${candidate.broker_login}`;
+    try {
+      const live = await deps.connector.getAccount(accountRef);
+      if (String(live.login) === candidate.broker_login) {
+        return { accountRef, brokerLogin: candidate.broker_login };
+      }
+    } catch {
+      // A terminal restart may make the live probe temporarily unavailable.
+    }
   }
   const accountRef = `${deps.connector.id}-${row.broker_server}-${row.broker_login}`;
   return { accountRef, brokerLogin: row.broker_login };
@@ -188,7 +201,7 @@ export async function tradingRoutes(app: FastifyInstance): Promise<void> {
     { preHandler: requireScope(deps, ReadScope) },
     async (req) => {
       const q = QuerySymbolsSchema.parse(req.query ?? {});
-      const { accountRef } = resolveAccountRef(deps);
+      const { accountRef } = await resolveAccountRef(deps);
       return withBrokerErrors(req, () =>
         deps.connector.symbols(accountRef, {
           pattern: q.pattern,
@@ -202,7 +215,7 @@ export async function tradingRoutes(app: FastifyInstance): Promise<void> {
     '/v1/symbols/:symbol',
     { preHandler: requireScope(deps, ReadScope) },
     async (req) => {
-      const { accountRef } = resolveAccountRef(deps);
+      const { accountRef } = await resolveAccountRef(deps);
       return withBrokerErrors(req, async () => {
         const detail = await deps.connector.getSymbol(
           accountRef,
@@ -218,7 +231,7 @@ export async function tradingRoutes(app: FastifyInstance): Promise<void> {
     { preHandler: requireScope(deps, ReadScope) },
     async (req) => {
       const q = QueryQuoteSchema.parse(req.query ?? {});
-      const { accountRef } = resolveAccountRef(deps);
+      const { accountRef } = await resolveAccountRef(deps);
       return withBrokerErrors(req, () =>
         deps.connector.quote(accountRef, q.symbol),
       );
@@ -229,7 +242,7 @@ export async function tradingRoutes(app: FastifyInstance): Promise<void> {
     '/v1/account',
     { preHandler: requireScope(deps, ReadScope) },
     async (req) => {
-      const { accountRef } = resolveAccountRef(deps);
+      const { accountRef } = await resolveAccountRef(deps);
       return withBrokerErrors(req, () =>
         deps.connector.getAccount(accountRef),
       );
@@ -240,7 +253,7 @@ export async function tradingRoutes(app: FastifyInstance): Promise<void> {
     '/v1/positions',
     { preHandler: requireScope(deps, ReadScope) },
     async (req) => {
-      const { accountRef } = resolveAccountRef(deps);
+      const { accountRef } = await resolveAccountRef(deps);
       return withBrokerErrors(req, async () => {
         const positions = await deps.connector.getPositions(accountRef);
         return { count: positions.length, positions };
@@ -252,7 +265,7 @@ export async function tradingRoutes(app: FastifyInstance): Promise<void> {
     '/v1/orders',
     { preHandler: requireScope(deps, ReadScope) },
     async (req) => {
-      const { accountRef } = resolveAccountRef(deps);
+      const { accountRef } = await resolveAccountRef(deps);
       return withBrokerErrors(req, async () => {
         const orders = await deps.connector.getOrders(accountRef);
         return { count: orders.length, orders };
@@ -264,7 +277,7 @@ export async function tradingRoutes(app: FastifyInstance): Promise<void> {
     '/v1/orders/:id',
     { preHandler: requireScope(deps, ReadScope) },
     async (req) => {
-      const { accountRef } = resolveAccountRef(deps);
+      const { accountRef } = await resolveAccountRef(deps);
       const orderId = req.params.id;
       return withBrokerErrors(req, async () => {
         const orders = await deps.connector.getOrders(accountRef);
@@ -289,7 +302,7 @@ export async function tradingRoutes(app: FastifyInstance): Promise<void> {
     { preHandler: requireScope(deps, ReadScope) },
     async (req) => {
       const q = QueryFillsSchema.parse(req.query ?? {});
-      const { accountRef } = resolveAccountRef(deps);
+      const { accountRef } = await resolveAccountRef(deps);
       return withBrokerErrors(req, async () => {
         const deals = await deps.connector.getHistory(accountRef, {
           from: q.from,
@@ -308,7 +321,7 @@ export async function tradingRoutes(app: FastifyInstance): Promise<void> {
     { preHandler: requireScope(deps, WriteScope) },
     async (req) => {
       const body = PlaceOrderSchema.parse(req.body ?? {});
-      const { accountRef } = resolveAccountRef(deps);
+      const { accountRef } = await resolveAccountRef(deps);
       const result = await deps.idempotency(req.headers['idempotency-key'] as string | undefined, { accountRef, body }, () => withBrokerErrors(req, () =>
         deps.connector.openTrade(accountRef, {
           instrument: body.instrument,
@@ -329,7 +342,7 @@ export async function tradingRoutes(app: FastifyInstance): Promise<void> {
     { preHandler: requireScope(deps, WriteScope) },
     async (req) => {
       const body = ClosePositionSchema.parse(req.body ?? {});
-      const { accountRef } = resolveAccountRef(deps);
+      const { accountRef } = await resolveAccountRef(deps);
       const result = await deps.idempotency(req.headers['idempotency-key'] as string | undefined, { accountRef, close: req.params.id, body }, () => withBrokerErrors(req, () =>
         deps.connector.closeTrade(accountRef, req.params.id, body.volume),
       ));
@@ -342,7 +355,7 @@ export async function tradingRoutes(app: FastifyInstance): Promise<void> {
     { preHandler: requireScope(deps, WriteScope) },
     async (req) => {
       const body = ModifyPositionSchema.parse(req.body ?? {});
-      const { accountRef } = resolveAccountRef(deps);
+      const { accountRef } = await resolveAccountRef(deps);
       return deps.idempotency(req.headers['idempotency-key'] as string | undefined, { accountRef, modify: req.params.id, body }, () => withBrokerErrors(req, () =>
         deps.connector.modifyPosition(
           accountRef,
@@ -359,8 +372,8 @@ export async function tradingRoutes(app: FastifyInstance): Promise<void> {
     { preHandler: requireScope(deps, WriteScope) },
     async (req) => {
       const body = ModifyOrderSchema.parse(req.body ?? {});
-      const { accountRef } = resolveAccountRef(deps);
-      return withBrokerErrors(req, () =>
+      const { accountRef } = await resolveAccountRef(deps);
+      return deps.idempotency(req.headers['idempotency-key'] as string | undefined, { accountRef, modifyOrder: req.params.id, body }, () => withBrokerErrors(req, () =>
         deps.connector.modifyOrder(
           accountRef,
           req.params.id,
@@ -368,7 +381,7 @@ export async function tradingRoutes(app: FastifyInstance): Promise<void> {
           body.tp ?? null,
           body.price ?? null,
         ),
-      );
+      ));
     },
   );
 
@@ -376,7 +389,7 @@ export async function tradingRoutes(app: FastifyInstance): Promise<void> {
     '/v1/orders/:id',
     { preHandler: requireScope(deps, WriteScope) },
     async (req) => {
-      const { accountRef } = resolveAccountRef(deps);
+      const { accountRef } = await resolveAccountRef(deps);
       return deps.idempotency(req.headers['idempotency-key'] as string | undefined, { accountRef, cancel: req.params.id }, () => withBrokerErrors(req, () =>
         deps.connector.cancelOrder(accountRef, req.params.id),
       ));
