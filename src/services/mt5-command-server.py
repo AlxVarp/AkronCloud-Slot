@@ -164,7 +164,7 @@ def run(action: str, payload: dict[str, Any]) -> dict[str, Any]:
         if kind == "market":
             request["type_filling"] = mt5.ORDER_FILLING_FOK
         checked = mt5.order_check(request)
-        if checked is None or checked.retcode != mt5.TRADE_RETCODE_DONE:
+        if checked is None or checked.retcode not in (0, mt5.TRADE_RETCODE_DONE):
             raise trade_failed("order_check_failed", checked)
         result = mt5.order_send(request)
         if result is None or result.retcode not in (mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED):
@@ -190,7 +190,7 @@ def run(action: str, payload: dict[str, Any]) -> dict[str, Any]:
             "type_time": current.type_time, "expiration": current.time_expiration,
         }
         checked = mt5.order_check(request)
-        if checked is None or checked.retcode != mt5.TRADE_RETCODE_DONE:
+        if checked is None or checked.retcode not in (0, mt5.TRADE_RETCODE_DONE):
             raise trade_failed("modify_check_failed", checked)
         result = mt5.order_send(request)
         if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
