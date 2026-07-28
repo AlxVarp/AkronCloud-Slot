@@ -81,7 +81,9 @@ export const MOBILE_HTML = `<!DOCTYPE html>
     #topbar button.primary {
       background: var(--accent); color: #fff; border-color: var(--accent);
     }
-    #topbar button.primary:disabled { opacity: .5; }
+    #topbar button.primary:disabled { opacity: .7; }
+    .sync-spinner { display:inline-block; width:12px; height:12px; border:2px solid rgba(255,255,255,.45); border-top-color:#fff; border-radius:50%; animation:sync-spin .7s linear infinite; vertical-align:-2px; margin-right:5px; }
+    @keyframes sync-spin { to { transform:rotate(360deg); } }
     /* The terminal is configured from MT5 itself. Keep this wrapper to one
        intentional action: Sync. The virtual keyboard remains below. */
     #topbar { justify-content: flex-end; }
@@ -840,7 +842,7 @@ function enableSyncButton() {
 }
 async function triggerSync(_reason) {
   syncbtn.disabled = true;
-  syncbtn.textContent = 'Syncing…';
+  syncbtn.innerHTML = '<span class="sync-spinner" aria-hidden="true"></span>Syncing…';
   try {
     const r = await fetch('/internal/sync', { method: 'POST' });
     if (!r.ok) throw new Error('HTTP ' + r.status);
