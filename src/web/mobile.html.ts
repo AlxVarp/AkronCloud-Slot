@@ -103,25 +103,6 @@ export const MOBILE_HTML = `<!DOCTYPE html>
       touch-action: none;
     }
     #screen canvas { display: block; transform-origin: 0 0; }
-    /* Mobile-only viewport controls. They are a sibling overlay, not a
-       wrapper around the RFB canvas, so they cannot change its geometry or
-       pointer-coordinate mapping. */
-    #viewport-controls {
-      position: absolute; right: 8px; bottom: 8px; z-index: 10;
-      display: flex; flex-direction: column; gap: 6px;
-      pointer-events: none;
-    }
-    #viewport-controls button {
-      pointer-events: auto;
-      min-width: 48px; min-height: 42px; padding: 6px 8px;
-      border: 1px solid var(--border); border-radius: 8px;
-      background: rgba(11, 14, 20, .92); color: var(--fg);
-      font-size: 12px; font-weight: 600;
-      touch-action: manipulation;
-    }
-    #viewport-controls button.active {
-      background: var(--accent); border-color: var(--accent); color: #fff;
-    }
     #placeholder {
       position: absolute; inset: 0;
       display: flex; align-items: center; justify-content: center;
@@ -242,7 +223,6 @@ export const MOBILE_HTML = `<!DOCTYPE html>
        while still requiring the virtual keyboard. */
     @media (hover: hover) and (pointer: fine) {
       #keyboard { display: none; }
-      #viewport-controls { display: none; }
       #topbar { padding: 7px 12px; gap: 9px; font-size: 13px; }
       #topbar .label { font-size: 13px; }
       #topbar button { min-height: 30px; padding: 4px 10px; }
@@ -435,7 +415,6 @@ let rfb = null;
 let reconnectTimer = null;
 let reconnectAttempt = 0;
 let fitFrame = null;
-let viewportMode = 'fit';
 
 function scheduleReconnect() {
   if (reconnectTimer) return;
@@ -517,7 +496,6 @@ function connect() {
       canvas.focus();
     }
     fit();
-    installViewportControls();
     // Auto-sync once on connect. SlotService.mq5 will emit an
     // account_status event shortly after the MT5 desktop is up; this
     // POST nudges the slot to re-validate even before that event
@@ -562,61 +540,6 @@ function fit() {
     RFB.messages.fbUpdateRequest(rfb._sock, false, 0, 0, rfb._fbWidth, rfb._fbHeight);
   } catch (e) { /* defensive */ }
   setTimeout(() => setStatus('ok', 'refreshed (' + (rfb._fbWidth || 0) + 'x' + (rfb._fbHeight || 0) + ')'), 350);
-}
-
-// RFB exposes these three settings specifically for viewport navigation.
-// We use its native clipping/dragging behaviour rather than changing canvas
-// size or applying CSS transforms, which would invalidate tap coordinates.
-function setViewportMode(mode) {
-  if (!rfb) return;
-  if (mode === 'reset') mode = 'fit';
-  viewportMode = mode;
-  rfb.resizeSession = false;
-  if (mode === 'fit') {
-    rfb.scaleViewport = true;
-    rfb.clipViewport = true;
-    rfb.dragViewport = false;
-  } else if (mode === 'exact') {
-    rfb.scaleViewport = false;
-    rfb.clipViewport = true;
-    rfb.dragViewport = false;
-  } else if (mode === 'pan') {
-    rfb.scaleViewport = false;
-    rfb.clipViewport = true;
-    rfb.dragViewport = true;
-  }
-  try { rfb._updateScale(); } catch (e) { /* RFB applies on next frame */ }
-  const controls = document.getElementById('viewport-controls');
-  if (controls) {
-    controls.querySelectorAll('button[data-viewport]').forEach((button) => {
-      const active = button.dataset.viewport === viewportMode;
-      button.classList.toggle('active', active);
-      button.setAttribute('aria-pressed', String(active));
-    });
-  }
-}
-
-function installViewportControls() {
-  const existing = document.getElementById('viewport-controls');
-  if (existing) existing.remove();
-  const controls = document.createElement('div');
-  controls.id = 'viewport-controls';
-  controls.setAttribute('aria-label', 'Mobile viewport controls');
-  controls.innerHTML = [
-    '<button type="button" data-viewport="fit" title="Fit the desktop to the phone">Fit</button>',
-    '<button type="button" data-viewport="exact" title="Show the desktop at 100% size">100%</button>',
-    '<button type="button" data-viewport="pan" title="Drag to move the 100% viewport">Pan</button>',
-    '<button type="button" data-viewport="reset" title="Return to the fitted view">Reset</button>',
-  ].join('');
-  controls.addEventListener('click', (event) => {
-    const button = event.target.closest('button[data-viewport]');
-    if (!button) return;
-    event.preventDefault();
-    event.stopPropagation();
-    setViewportMode(button.dataset.viewport);
-  });
-  screen.appendChild(controls);
-  setViewportMode('fit');
 }
 
 // Mobile browsers alter the visual viewport when their software keyboard,
