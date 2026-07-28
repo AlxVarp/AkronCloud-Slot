@@ -1,5 +1,14 @@
 import { describe, it, expect } from 'vitest';
 import { computeZoomViewport } from '../src/web/zoom-viewport.js';
+import { MOBILE_HTML } from '../src/web/mobile.html.js';
+
+describe('mobile zoom controls', () => {
+  it('caps the slider at 100%', () => {
+    expect(MOBILE_HTML).toContain(
+      '<input type="range" id="zoomslider" min="50" max="100" step="5" value="100" aria-label="Zoom">',
+    );
+  });
+});
 
 describe('computeZoomViewport', () => {
   it('factor 1 fits the container', () => {
