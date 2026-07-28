@@ -136,7 +136,8 @@ type PendingCommand = {
 export class Mt5TcpServer {
   private server?: net.Server;
   private sock?: net.Socket;
-  private recvBuf = '';
+  private sockets = new Set<net.Socket>();
+  private recvBufs = new Map<net.Socket, string>();
   private pending = new Map<string, PendingCommand>();
   // v2.11: dedicated outbound command client (SlotService listens on 7779).
   private cmdClient?: import('./mt5-command-client.js').Mt5CommandClient;
@@ -252,7 +253,7 @@ export class Mt5TcpServer {
   }
 
   isConnected(): boolean {
-    return !!this.sock && !this.sock.destroyed;
+    return this.sockets.size > 0;
   }
 
   /**
@@ -289,7 +290,9 @@ export class Mt5TcpServer {
       p.resolve({ ok: false, error: 'mt5_server_stopping' });
     }
     this.pending.clear();
-    if (this.sock) this.sock.destroy();
+    for (const sock of this.sockets) sock.destroy();
+    this.sockets.clear();
+    this.recvBufs.clear();
     if (this.server) {
       await new Promise<void>((resolve) => this.server!.close(() => resolve()));
     }
@@ -297,30 +300,25 @@ export class Mt5TcpServer {
 
   private handleConnection(sock: net.Socket): void {
     const peer = `${sock.remoteAddress ?? '?'}:${sock.remotePort ?? '?'}`;
-    if (this.sock) {
-      log.warn('MT5 TCP: replacing existing connection');
-      this.connectionLog.push({ at: Date.now(), event: 'replace', peer });
-      this.trimLog(this.connectionLog);
-      this.sock.destroy();
-    }
+    this.sockets.add(sock);
+    this.recvBufs.set(sock, '');
     this.sock = sock;
-    this.recvBuf = '';
     log.info({ remote: sock.remoteAddress, port: sock.remotePort },
              'MT5 TCP: connected');
     this.connectionLog.push({ at: Date.now(), event: 'connect', peer });
     this.trimLog(this.connectionLog);
 
-    sock.on('data', (chunk: Buffer) => this.onData(chunk));
-    sock.on('close', () => this.onClose());
+    sock.on('data', (chunk: Buffer) => this.onData(sock, chunk));
+    sock.on('close', () => this.onClose(sock));
     sock.on('error', (err) => log.warn({ err: err.message }, 'MT5 TCP: socket error'));
   }
 
-  private onData(chunk: Buffer): void {
-    this.recvBuf += chunk.toString('utf8');
+  private onData(sock: net.Socket, chunk: Buffer): void {
+    let recvBuf = (this.recvBufs.get(sock) ?? '') + chunk.toString('utf8');
     let idx: number;
-    while ((idx = this.recvBuf.indexOf('\n')) >= 0) {
-      const frame = this.recvBuf.slice(0, idx);
-      this.recvBuf = this.recvBuf.slice(idx + 1);
+    while ((idx = recvBuf.indexOf('\n')) >= 0) {
+      const frame = recvBuf.slice(0, idx);
+      recvBuf = recvBuf.slice(idx + 1);
       try {
         this.dispatch(JSON.parse(frame));
       } catch (err) {
@@ -328,10 +326,11 @@ export class Mt5TcpServer {
                  'MT5 TCP: bad frame');
       }
     }
-    if (this.recvBuf.length > RECV_BUF_MAX) {
+    if (recvBuf.length > RECV_BUF_MAX) {
       log.warn('MT5 TCP: recv buffer overflow, dropping');
-      this.recvBuf = '';
+      recvBuf = '';
     }
+    this.recvBufs.set(sock, recvBuf);
   }
 
   private dispatch(frame: unknown): void {
@@ -440,11 +439,14 @@ export class Mt5TcpServer {
     }
   }
 
-  private onClose(): void {
+  private onClose(sock: net.Socket): void {
     log.warn('MT5 TCP: disconnected');
     this.connectionLog.push({ at: Date.now(), event: 'disconnect', peer: null });
     this.trimLog(this.connectionLog);
-    this.sock = undefined;
+    this.sockets.delete(sock);
+    this.recvBufs.delete(sock);
+    if (this.sock === sock) this.sock = this.sockets.values().next().value;
+    if (this.sockets.size > 0) return;
     for (const [id, p] of this.pending) {
       clearTimeout(p.timer);
       p.resolve({ ok: false, error: 'mt5_disconnected' });
