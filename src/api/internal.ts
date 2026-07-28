@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 
 import type { Deps } from '../app.js';
 import { validateAccount } from '../validator.js';
+import { lockVisualSession, unlockVisualSession } from '../services/visual-session-lock.js';
 
 // The mobile and desktop wrappers both sync on RFB connect, and browsers can
 // briefly reconnect more than once while KasmVNC settles. Avoid launching
@@ -36,6 +37,7 @@ export async function internalRoutes(app: FastifyInstance): Promise<void> {
     const accounts = deps.accounts.list(deps.cfg.tenantId);
     const active = accounts.find((account) => account.status === 'active');
     if (!active) {
+      unlockVisualSession();
       return { operational: false, checked_at: Date.now() };
     }
     // A persisted DB status can outlive an MT5 restart. Confirm that the
@@ -43,11 +45,12 @@ export async function internalRoutes(app: FastifyInstance): Promise<void> {
     try {
       const accountRef = `${deps.connector.id}-${active.broker_server}-${active.broker_login}`;
       const live = await deps.connector.getAccount(accountRef);
-      return {
-        operational: String(live.login ?? '') === active.broker_login,
-        checked_at: Date.now(),
-      };
+      const operational = String(live.login ?? '') === active.broker_login;
+      if (operational) lockVisualSession();
+      else unlockVisualSession();
+      return { operational, checked_at: Date.now() };
     } catch {
+      unlockVisualSession();
       return { operational: false, checked_at: Date.now() };
     }
   });

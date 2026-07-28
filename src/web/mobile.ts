@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { MOBILE_HTML } from './mobile.html.js';
 import { registerVncStaticRoutes } from './vnc-static-routes.js';
 import { registerMt5WsProxy } from './mt5-ws-proxy.js';
+import { visualSessionLocked } from '../services/visual-session-lock.js';
 
 /**
  * GET /mobile — phone-friendly VNC wrapper for KasmVNC.
@@ -32,10 +33,13 @@ export async function registerMobileRoutes(app: FastifyInstance): Promise<void> 
   await registerVncStaticRoutes(app);
   await registerMt5WsProxy(app);
   app.get('/terminal', async (_req, reply) => {
+    const html = visualSessionLocked()
+      ? '<!doctype html><meta name=viewport content="width=device-width,initial-scale=1"><title>Cuenta sincronizada</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0b0e14;color:#c9d1d9;font:16px system-ui}main{text-align:center;padding:32px}b{color:#3fb950}</style><main><b>Cuenta sincronizada</b><p>MT5 y la API continúan operativos.</p></main>'
+      : MOBILE_HTML;
     reply
       .type('text/html; charset=utf-8')
       .header('Cache-Control', 'no-cache, no-store, must-revalidate')
-      .send(MOBILE_HTML);
+      .send(html);
   });
   app.get('/mobile', async (_req, reply) => {
     return reply.redirect('/terminal', 308);
