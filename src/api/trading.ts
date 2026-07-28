@@ -330,9 +330,9 @@ export async function tradingRoutes(app: FastifyInstance): Promise<void> {
     async (req) => {
       const body = ClosePositionSchema.parse(req.body ?? {});
       const { accountRef } = resolveAccountRef(deps);
-      const result = await withBrokerErrors(req, () =>
+      const result = await deps.idempotency(req.headers['idempotency-key'] as string | undefined, { accountRef, close: req.params.id, body }, () => withBrokerErrors(req, () =>
         deps.connector.closeTrade(accountRef, req.params.id, body.volume),
-      );
+      ));
       return result;
     },
   );
@@ -343,14 +343,14 @@ export async function tradingRoutes(app: FastifyInstance): Promise<void> {
     async (req) => {
       const body = ModifyPositionSchema.parse(req.body ?? {});
       const { accountRef } = resolveAccountRef(deps);
-      return withBrokerErrors(req, () =>
+      return deps.idempotency(req.headers['idempotency-key'] as string | undefined, { accountRef, modify: req.params.id, body }, () => withBrokerErrors(req, () =>
         deps.connector.modifyPosition(
           accountRef,
           req.params.id,
           body.sl ?? null,
           body.tp ?? null,
         ),
-      );
+      ));
     },
   );
 
@@ -377,9 +377,9 @@ export async function tradingRoutes(app: FastifyInstance): Promise<void> {
     { preHandler: requireScope(deps, WriteScope) },
     async (req) => {
       const { accountRef } = resolveAccountRef(deps);
-      return withBrokerErrors(req, () =>
+      return deps.idempotency(req.headers['idempotency-key'] as string | undefined, { accountRef, cancel: req.params.id }, () => withBrokerErrors(req, () =>
         deps.connector.cancelOrder(accountRef, req.params.id),
-      );
+      ));
     },
   );
 }
