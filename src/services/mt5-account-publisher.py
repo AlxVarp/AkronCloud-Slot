@@ -167,29 +167,90 @@ def command_result(action: str, payload: dict[str, Any]) -> dict[str, Any]:
     if action == "open":
         symbol = str(payload.get("symbol") or payload.get("instrument") or "")
         side = str(payload.get("side") or "").lower()
-        volume = float(payload.get("volume") or 0)
+        volume = float(payload.get("qty") or payload.get("volume") or 0)
+        order_kind = str(payload.get("type") or "market").lower()
+        price = float(payload.get("price") or 0)
         if not symbol or side not in ("buy", "sell") or volume <= 0:
             raise RuntimeError("invalid_open_payload")
+        if order_kind not in ("market", "limit", "stop"):
+            raise RuntimeError("unsupported_order_type")
+        if order_kind != "market" and price <= 0:
+            raise RuntimeError("price_required_for_pending_order")
         if not mt5.symbol_select(symbol, True):
             raise RuntimeError("symbol_select_failed")
         tick = mt5.symbol_info_tick(symbol)
         if tick is None:
             raise RuntimeError("quote_unavailable")
-        request = {"action": mt5.TRADE_ACTION_DEAL, "symbol": symbol, "volume": volume,
-                   "type": mt5.ORDER_TYPE_BUY if side == "buy" else mt5.ORDER_TYPE_SELL,
-                   "price": tick.ask if side == "buy" else tick.bid,
+        pending_types = {
+            ("buy", "limit"): mt5.ORDER_TYPE_BUY_LIMIT,
+            ("sell", "limit"): mt5.ORDER_TYPE_SELL_LIMIT,
+            ("buy", "stop"): mt5.ORDER_TYPE_BUY_STOP,
+            ("sell", "stop"): mt5.ORDER_TYPE_SELL_STOP,
+        }
+        request = {"action": mt5.TRADE_ACTION_DEAL if order_kind == "market" else mt5.TRADE_ACTION_PENDING,
+                   "symbol": symbol, "volume": volume,
+                   "type": (mt5.ORDER_TYPE_BUY if side == "buy" else mt5.ORDER_TYPE_SELL)
+                           if order_kind == "market" else pending_types[(side, order_kind)],
+                   "price": (tick.ask if side == "buy" else tick.bid) if order_kind == "market" else price,
                    "deviation": int(payload.get("deviation") or 10),
                    "sl": float(payload.get("sl") or 0), "tp": float(payload.get("tp") or 0),
                    "comment": str(payload.get("comment") or "akroncloud")}
         result = mt5.order_send(request)
-        if result is None or getattr(result, "retcode", 0) not in (mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED):
-            raise RuntimeError("order_send_failed")
+        if result is None or getattr(result, "retcode", 0) not in (0, mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED):
+            raise RuntimeError("order_send_failed:" + str(getattr(result, "comment", "unknown")))
         return {"order_id": str(result.order), "broker_order_id": str(result.order), "deal": str(result.deal)}
+
+    if action == "close":
+        ticket = int(payload.get("position_id") or payload.get("ticket") or 0)
+        positions = mt5.positions_get(ticket=ticket) or ()
+        if not positions:
+            raise RuntimeError("position_not_found")
+        position = positions[0]
+        volume = float(payload.get("qty") or payload.get("volume") or position.volume)
+        if volume <= 0 or volume > position.volume:
+            raise RuntimeError("invalid_close_volume")
+        tick = mt5.symbol_info_tick(position.symbol)
+        if tick is None:
+            raise RuntimeError("quote_unavailable")
+        result = mt5.order_send({"action": mt5.TRADE_ACTION_DEAL, "position": ticket,
+            "symbol": position.symbol, "volume": volume,
+            "type": mt5.ORDER_TYPE_SELL if position.type == mt5.POSITION_TYPE_BUY else mt5.ORDER_TYPE_BUY,
+            "price": tick.bid if position.type == mt5.POSITION_TYPE_BUY else tick.ask,
+            "deviation": int(payload.get("deviation") or 10)})
+        if result is None or getattr(result, "retcode", 0) not in (0, mt5.TRADE_RETCODE_DONE):
+            raise RuntimeError("close_failed:" + str(getattr(result, "comment", "unknown")))
+        return {"closed_ticket": str(result.order), "broker_order_id": str(result.order)}
+
+    if action == "modify_position":
+        ticket = int(payload.get("position_id") or payload.get("ticket") or 0)
+        positions = mt5.positions_get(ticket=ticket) or ()
+        if not positions:
+            raise RuntimeError("position_not_found")
+        position = positions[0]
+        result = mt5.order_send({"action": mt5.TRADE_ACTION_SLTP, "position": ticket,
+            "symbol": position.symbol, "sl": float(payload.get("sl") or 0), "tp": float(payload.get("tp") or 0)})
+        if result is None or getattr(result, "retcode", 0) not in (0, mt5.TRADE_RETCODE_DONE):
+            raise RuntimeError("modify_position_failed:" + str(getattr(result, "comment", "unknown")))
+        return {"modified": True}
+
+    if action == "modify_order":
+        ticket = int(payload.get("order_id") or payload.get("ticket") or 0)
+        orders = mt5.orders_get(ticket=ticket) or ()
+        if not orders:
+            raise RuntimeError("order_not_found")
+        order = orders[0]
+        result = mt5.order_send({"action": mt5.TRADE_ACTION_MODIFY, "order": ticket,
+            "symbol": order.symbol, "price": float(payload.get("price") or order.price_open),
+            "sl": float(payload.get("sl") or 0), "tp": float(payload.get("tp") or 0),
+            "type_time": order.type_time, "expiration": order.time_expiration})
+        if result is None or getattr(result, "retcode", 0) not in (0, mt5.TRADE_RETCODE_DONE):
+            raise RuntimeError("modify_order_failed:" + str(getattr(result, "comment", "unknown")))
+        return {"modified": True}
 
     if action == "cancel":
         ticket = int(payload.get("order_id") or payload.get("ticket") or 0)
         result = mt5.order_send({"action": mt5.TRADE_ACTION_REMOVE, "order": ticket})
-        if result is None or getattr(result, "retcode", 0) != mt5.TRADE_RETCODE_DONE:
+        if result is None or getattr(result, "retcode", 0) not in (0, mt5.TRADE_RETCODE_DONE):
             raise RuntimeError("cancel_failed")
         return {"canceled": str(ticket)}
 
