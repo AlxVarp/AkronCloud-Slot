@@ -17,6 +17,7 @@ import type { BrokerConnector } from './connectors/base.js';
 import { makeConnector } from './connectors/index.js';
 import { makeLedger, type Ledger } from './ledger.js';
 import { randomUUID } from 'node:crypto';
+import { makeIdempotency } from './services/idempotency.js';
 
 /**
  * Lightweight dependency container shared by routes + workers.
@@ -33,6 +34,7 @@ export type Deps = {
   crypto: { encrypt: typeof encrypt; decrypt: typeof decrypt };
   auth: { verifyToken: typeof verifyToken; extractBearer: typeof extractBearer };
   log: typeof log;
+  idempotency: ReturnType<typeof makeIdempotency>;
 };
 
 export async function buildApp(cfg: AppConfig): Promise<FastifyInstance> {
@@ -47,6 +49,7 @@ export async function buildApp(cfg: AppConfig): Promise<FastifyInstance> {
   });
 
   const db = openAndMigrate(cfg.stateDb);
+  const idempotency = makeIdempotency(db);
   const ledger = makeLedger(db);
 
   // Phase C / Ruta B1: always bring up the TCP server. The MT5
@@ -164,6 +167,7 @@ export async function buildApp(cfg: AppConfig): Promise<FastifyInstance> {
     accounts: accountsRepo(db),
     ledger,
     connector,
+    idempotency,
     crypto: { encrypt, decrypt },
     auth: { verifyToken, extractBearer },
     log,

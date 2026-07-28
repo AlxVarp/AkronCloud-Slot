@@ -309,7 +309,7 @@ export async function tradingRoutes(app: FastifyInstance): Promise<void> {
     async (req) => {
       const body = PlaceOrderSchema.parse(req.body ?? {});
       const { accountRef } = resolveAccountRef(deps);
-      const result = await withBrokerErrors(req, () =>
+      const result = await deps.idempotency(req.headers['idempotency-key'] as string | undefined, { accountRef, body }, () => withBrokerErrors(req, () =>
         deps.connector.openTrade(accountRef, {
           instrument: body.instrument,
           side: body.side,
@@ -319,7 +319,7 @@ export async function tradingRoutes(app: FastifyInstance): Promise<void> {
           sl: body.sl,
           tp: body.tp,
         }),
-      );
+      ));
       return result;
     },
   );
