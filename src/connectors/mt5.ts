@@ -530,7 +530,13 @@ export class Mt5Connector implements BrokerConnector {
     // Prefer MQL5's canonical symbol string (it normalises
     // case/suffix); fall back to the caller's input if MQL5 didn't
     // echo it back.
-    return { ...result, symbol: result.symbol ?? symbol };
+    return {
+      ...result,
+      symbol: result.symbol ?? symbol,
+      min_lot: result.min_lot ?? Number(result.volume_min ?? 0.01),
+      max_lot: result.max_lot ?? Number(result.volume_max ?? 100),
+      lot_step: result.lot_step ?? Number(result.volume_step ?? 0.01),
+    };
   }
 
   async getOrders(accountRef: string): Promise<BrokerOrder[]> {
