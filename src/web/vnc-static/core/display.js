@@ -484,12 +484,6 @@ export default class Display {
             deltaY -= (vy2 + deltaY - this._fbHeight + 1);
         }
 
-            // Upstream KasmVNC fork logs the clamped delta but never
-            // applies it, so dragViewport and the wrapper focal zoom
-            // never actually shift the viewport. Apply it here.
-            vp.x += deltaX;
-            vp.y += deltaY;
-
         if (deltaX === 0 && deltaY === 0) {
             return;
         }
