@@ -141,8 +141,9 @@ export async function registerMt5WsProxy(app: FastifyInstance): Promise<void> {
 
       client.on('message', (data: Buffer | ArrayBuffer | Buffer[], isBinary: boolean) => {
         const frame = Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer);
-        if (isBinary && frame.length) {
-          clientFrameTypes.set(frame[0], (clientFrameTypes.get(frame[0]) ?? 0) + 1);
+        const firstByte = frame[0];
+        if (isBinary && firstByte !== undefined) {
+          clientFrameTypes.set(firstByte, (clientFrameTypes.get(firstByte) ?? 0) + 1);
         }
         forwardToUpstream(data, isBinary);
       });
