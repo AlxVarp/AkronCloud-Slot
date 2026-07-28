@@ -78,6 +78,7 @@ log = logging.getLogger("mt5-account-publisher")
 SLOT_HOST = os.environ.get("SLOT_MT5_TCP_HOST", "127.0.0.1")
 SLOT_PORT = int(os.environ.get("SLOT_MT5_TCP_PORT", "7778"))
 POLL_SECS = float(os.environ.get("MT5_ACCOUNT_POLL_SECS", "1.5"))
+TRADE_EVENT_POLL_SECS = float(os.environ.get("MT5_TRADE_EVENT_POLL_SECS", "0.075"))
 INIT_RETRY_SECS = float(os.environ.get("MT5_INIT_RETRY_SECS", "5.0"))
 INIT_TIMEOUT_SECS = float(os.environ.get("MT5_INIT_TIMEOUT_SECS", "60.0"))
 COMMAND_HOST = os.environ.get("SLOT_MT5_CMD_BIND", "127.0.0.1")
@@ -291,6 +292,75 @@ def normalize_account(info: Any) -> dict[str, Any]:
     }
 
 
+class TradeEventPublisher:
+    """Publish external MT5 order/position deltas without MQL5 Services."""
+
+    def __init__(self) -> None:
+        self.orders: Optional[dict[str, dict[str, Any]]] = None
+        self.positions: Optional[dict[str, dict[str, Any]]] = None
+
+    @staticmethod
+    def _order(row: Any) -> dict[str, Any]:
+        return {
+            "order_id": str(getattr(row, "ticket", "")),
+            "symbol": str(getattr(row, "symbol", "")),
+            "order_state": int(getattr(row, "state", 0) or 0),
+            "order_type": int(getattr(row, "type", 0) or 0),
+            "volume": float(getattr(row, "volume_current", 0) or 0),
+            "price": float(getattr(row, "price_open", 0) or 0),
+            "sl": float(getattr(row, "sl", 0) or 0),
+            "tp": float(getattr(row, "tp", 0) or 0),
+        }
+
+    @staticmethod
+    def _position(row: Any) -> dict[str, Any]:
+        return {
+            "position_id": str(getattr(row, "ticket", "")),
+            "symbol": str(getattr(row, "symbol", "")),
+            "volume": float(getattr(row, "volume", 0) or 0),
+            "price": float(getattr(row, "price_open", 0) or 0),
+            "sl": float(getattr(row, "sl", 0) or 0),
+            "tp": float(getattr(row, "tp", 0) or 0),
+        }
+
+    def poll(self, client: SlotClient) -> None:
+        try:
+            raw_orders = mt5.orders_get()
+            raw_positions = mt5.positions_get()
+        except Exception as exc:
+            log.warning("trade event poll failed: %s", exc)
+            return
+        # None means the terminal call failed; never treat it as an empty
+        # snapshot because that would falsely publish cancellations/closes.
+        if raw_orders is None or raw_positions is None:
+            return
+        orders = {str(row.ticket): self._order(row) for row in raw_orders}
+        positions = {str(row.ticket): self._position(row) for row in raw_positions}
+        if self.orders is None or self.positions is None:
+            self.orders, self.positions = orders, positions
+            log.info("trade event baseline captured: orders=%d positions=%d", len(orders), len(positions))
+            return
+
+        for ticket, current in orders.items():
+            previous = self.orders.get(ticket)
+            if previous is None:
+                client.send(frame("order_state", {**current, "status": "pending", "event": "created"}))
+            elif previous != current:
+                client.send(frame("order_state", {**current, "status": "pending", "event": "updated"}))
+        for ticket, previous in self.orders.items():
+            if ticket not in orders:
+                client.send(frame("order_state", {**previous, "status": "cancelled", "event": "deleted"}))
+
+        for ticket, current in positions.items():
+            previous = self.positions.get(ticket)
+            if previous is None or previous != current:
+                client.send(frame("position", {**current, "event": "opened" if previous is None else "updated"}))
+        for ticket, previous in self.positions.items():
+            if ticket not in positions:
+                client.send(frame("position", {**previous, "event": "closed"}))
+        self.orders, self.positions = orders, positions
+
+
 def try_init_mt5() -> bool:
     """Try to initialize the MT5 connection once. Returns True on success."""
     if not HAS_MT5:
@@ -330,6 +400,7 @@ def loop() -> int:
 
     command_server = start_command_server() if COMMAND_SERVER_ENABLED else None
     client = SlotClient(SLOT_HOST, SLOT_PORT)
+    trade_events = TradeEventPublisher()
     last_sent: Optional[dict[str, Any]] = None
     init_started_at = time.monotonic()
 
@@ -435,6 +506,8 @@ def loop() -> int:
                             data["login"], data["server"], data["balance"], data["equity"],
                         )
 
+                trade_events.poll(client)
+
         # Heartbeat every 30s — keep the TCP socket warm and signal liveness
         elif now - last_heartbeat >= 30.0:
             payload = frame("startup", {})
@@ -443,9 +516,10 @@ def loop() -> int:
 
         # Sleep in small slices so SIGTERM is responsive
         slept = 0.0
-        while slept < POLL_SECS and not _stop:
-            time.sleep(min(0.2, POLL_SECS - slept))
-            slept += 0.2
+        sleep_for = min(POLL_SECS, TRADE_EVENT_POLL_SECS)
+        while slept < sleep_for and not _stop:
+            time.sleep(min(0.05, sleep_for - slept))
+            slept += 0.05
 
     if command_server is not None:
         command_server.shutdown()
