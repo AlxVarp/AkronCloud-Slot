@@ -44,7 +44,7 @@ export async function internalRoutes(app: FastifyInstance): Promise<void> {
       const accountRef = `${deps.connector.id}-${active.broker_server}-${active.broker_login}`;
       const live = await deps.connector.getAccount(accountRef);
       return {
-        operational: String(live.login ?? '') === active.broker_login && live.trade_allowed === true,
+        operational: String(live.login ?? '') === active.broker_login && live.terminal_trade_allowed === true,
         checked_at: Date.now(),
       };
     } catch {

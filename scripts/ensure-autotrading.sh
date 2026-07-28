@@ -1,10 +1,5 @@
 #!/usr/bin/env bash
-# Enable MT5 AutoTrading only after a broker session is fully established.
-#
-# MT5 build 5836 can reset this interactive preference when the broker profile
-# is created. Running UI automation while the login wizard is open steals
-# focus, so this guard waits for the logged-in terminal title and a quiet main
-# window. It never places an order.
+# Enable AutoTrading only after MT5 reports a logged-in terminal with it off.
 set -u
 
 LOG=/var/log/ensure-autotrading.log
@@ -14,52 +9,45 @@ main_terminal_window() {
   local window title
   while read -r window; do
     title=$(s6-setuidgid abc env DISPLAY=:0 xdotool getwindowname "$window" 2>/dev/null || true)
-    # A connected MT5 workspace ends in a chart symbol/timeframe (for example
-    # "... - EURUSD,H1"). Broker builds use account titles, not a fixed name.
     [[ "$title" =~ ,(M[0-9]+|H[0-9]+|D[0-9]+|W[0-9]+|MN[0-9]+)$ ]] && { printf '%s' "$window"; return 0; }
   done < <(s6-setuidgid abc env DISPLAY=:0 xdotool search --name . 2>/dev/null || true)
   return 1
 }
 
-logged_in_terminal() {
-  [[ -n "$(main_terminal_window)" ]]
+account_state() {
+  printf '{"id":"autotrading","action":"account","payload":{}}\n' | nc -w 3 127.0.0.1 7780 2>/dev/null
 }
 
-enable_with_ui() {
-  local mt5 options X Y WIDTH HEIGHT
-  mt5=$(main_terminal_window || true)
-  [[ -n "$mt5" ]] || return 1
-  s6-setuidgid abc env DISPLAY=:0 xdotool windowactivate --sync "$mt5" key Escape key ctrl+o
-  sleep 1
-  options=$(s6-setuidgid abc env DISPLAY=:0 xdotool search --name '^Options$' 2>/dev/null | tail -n 1 || true)
-  [[ -n "$options" ]] || return 1
-  eval "$(s6-setuidgid abc env DISPLAY=:0 xdotool getwindowgeometry --shell "$options")"
-  # Use the actual window geometry rather than fixed desktop coordinates.
-  # Wine may reposition a modal after it is activated.
-  s6-setuidgid abc env DISPLAY=:0 xdotool windowactivate --sync "$options"
-  s6-setuidgid abc env DISPLAY=:0 xdotool mousemove "$((X + 185))" "$((Y + 41))" click 1
-  sleep 0.4
-  # Expert Advisors: first checkbox, then OK.  We enter only after the
-  # runtime API confirmed trading is off, so this is an enable operation.
-  s6-setuidgid abc env DISPLAY=:0 xdotool mousemove "$((X + 36))" "$((Y + 76))" click 1
-  sleep 0.2
-  s6-setuidgid abc env DISPLAY=:0 xdotool mousemove "$((X + WIDTH - 207))" "$((Y + HEIGHT - 18))" click 1
+needs_autotrading() {
+  local state
+  state=$(account_state) || return 1
+  [[ "$state" == *'"ok":true'* && "$state" == *'"terminal_trade_allowed":false'* ]]
+}
+
+autotrading_ready() {
+  local state
+  state=$(account_state) || return 1
+  [[ "$state" == *'"ok":true'* && "$state" == *'"terminal_trade_allowed":true'* ]]
 }
 
 last_title=''
 log 'post-login AutoTrading guard started'
 while true; do
-  if logged_in_terminal; then
-    title=$(s6-setuidgid abc env DISPLAY=:0 xdotool getwindowname "$(main_terminal_window)" 2>/dev/null || true)
-    # One attempt per newly authenticated account; avoid interfering with an
-    # already operational desktop or repeatedly opening Options on failure.
+  window=$(main_terminal_window || true)
+  if [[ -n "$window" ]] && needs_autotrading; then
+    title=$(s6-setuidgid abc env DISPLAY=:0 xdotool getwindowname "$window" 2>/dev/null || true)
     if [[ "$title" != "$last_title" ]]; then
-      sleep 8
-      if logged_in_terminal && enable_with_ui; then
-        log "AutoTrading enable UI submitted for $title"
+      s6-setuidgid abc env DISPLAY=:0 xdotool windowactivate --sync "$window" key Escape key ctrl+e
+      sleep 3
+      if autotrading_ready; then
+        log "AutoTrading enabled for $title"
+      else
+        log "AutoTrading toggle did not verify for $title"
       fi
       last_title="$title"
     fi
+  else
+    last_title=''
   fi
-  sleep 15
+  sleep 5
 done

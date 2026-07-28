@@ -115,7 +115,10 @@ def command_result(action: str, payload: dict[str, Any]) -> dict[str, Any]:
         fields = ("login", "server", "currency", "name", "company", "leverage",
                   "trade_allowed", "balance", "equity", "margin", "margin_free",
                   "margin_level", "profit")
-        return {key: getattr(info, key, None) for key in fields}
+        result = {key: getattr(info, key, None) for key in fields}
+        terminal = mt5.terminal_info()
+        result["terminal_trade_allowed"] = bool(getattr(terminal, "trade_allowed", False))
+        return result
 
     if action == "positions":
         positions = mt5.positions_get() or ()

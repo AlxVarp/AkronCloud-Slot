@@ -87,7 +87,10 @@ def run(action: str, payload: dict[str, Any]) -> dict[str, Any]:
         info = mt5.account_info()
         if info is None:
             raise RuntimeError("account_unavailable")
-        return info._asdict()
+        result = info._asdict()
+        terminal = mt5.terminal_info()
+        result["terminal_trade_allowed"] = bool(getattr(terminal, "trade_allowed", False))
+        return result
 
     if action == "positions":
         positions = mt5.positions_get() or ()
