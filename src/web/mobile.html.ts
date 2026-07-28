@@ -106,42 +106,21 @@ export const MOBILE_HTML = `<!DOCTYPE html>
     /* Mobile-only viewport controls. They are a sibling overlay, not a
        wrapper around the RFB canvas, so they cannot change its geometry or
        pointer-coordinate mapping. */
-    /* Focal zoom controls. Slider + Fit button + percent label, in one
-       horizontal overlay anchored to the bottom-right of #screen. Sibling
-       overlay, NOT a wrapper around the RFB canvas, so it cannot change
-       canvas geometry or pointer-coordinate mapping. resizeSession stays
-       false; we retune the display scale via _display.scale +
-       viewportChangePos (focal zoom around the last tap). */
     #viewport-controls {
       position: absolute; right: 8px; bottom: 8px; z-index: 10;
-      display: flex; flex-direction: row; align-items: center; gap: 6px;
-      padding: 4px 6px;
-      background: rgba(11, 14, 20, .92);
-      border: 1px solid var(--border); border-radius: 8px;
-      pointer-events: auto;
-      touch-action: manipulation;
+      display: flex; flex-direction: column; gap: 6px;
+      pointer-events: none;
     }
     #viewport-controls button {
-      background: var(--bg); color: var(--fg);
-      border: 1px solid var(--border); border-radius: 6px;
-      padding: 4px 8px; font-size: 12px; font-weight: 600;
-      min-width: 38px; min-height: 32px;
-      cursor: pointer;
-    }
-    #viewport-controls button:active { background: #21262d; }
-    #viewport-controls button.primary,
-    #viewport-controls button.active {
-      background: var(--accent); color: #fff; border-color: var(--accent);
-    }
-    #viewport-controls input[type="range"] {
-      width: 110px; height: 32px; margin: 0;
-      accent-color: var(--accent);
+      pointer-events: auto;
+      min-width: 48px; min-height: 42px; padding: 6px 8px;
+      border: 1px solid var(--border); border-radius: 8px;
+      background: rgba(11, 14, 20, .92); color: var(--fg);
+      font-size: 12px; font-weight: 600;
       touch-action: manipulation;
     }
-    #viewport-controls #zoomlabel {
-      min-width: 42px; text-align: center;
-      font-size: 12px; font-variant-numeric: tabular-nums;
-      color: var(--muted);
+    #viewport-controls button.active {
+      background: var(--accent); border-color: var(--accent); color: #fff;
     }
     #placeholder {
       position: absolute; inset: 0;
@@ -456,9 +435,7 @@ let rfb = null;
 let reconnectTimer = null;
 let reconnectAttempt = 0;
 let fitFrame = null;
-let fitScale = 1.0;
-let lastTap = null;
-let userZoom = 100;
+let viewportMode = 'fit';
 
 function scheduleReconnect() {
   if (reconnectTimer) return;
@@ -536,15 +513,11 @@ function connect() {
     if (canvas) {
       canvas.tabIndex = 0;
       canvas.style.cursor = 'none';
-      canvas.addEventListener('pointerdown', (event) => {
-        canvas.focus();
-        lastTap = { x: event.offsetX, y: event.offsetY };
-      }, { passive: true });
+      canvas.addEventListener('pointerdown', () => canvas.focus(), { passive: true });
       canvas.focus();
     }
     fit();
-    captureFitScale();
-    installZoomControls();
+    installViewportControls();
     // Auto-sync once on connect. SlotService.mq5 will emit an
     // account_status event shortly after the MT5 desktop is up; this
     // POST nudges the slot to re-validate even before that event
@@ -568,95 +541,82 @@ function connect() {
 }
 
 function fit() {
+  // What this does:
+  //   1. Recompute the canvas pixel-fit against the current #screen
+  //      size via Display.autoscale (RFB owns the canvas style.width
+  //      / style.height). This is what the bundled UI does on window
+  //      'resize'.
+  //   2. Re-request a full (non-incremental) framebuffer update from
+  //      KasmVNC so any stale pixels get redrawn. Without this, RFB
+  //      won't ask for new pixels unless the server pushes them, and
+  //      some state (e.g. recovering from a 'disconnected' that
+  //      re-connected with gaps) can stay stale visually.
+  //   3. Briefly flip the topbar label so the user gets explicit
+  //      feedback that the click did something. On a perfectly-fitted
+  //      canvas #1 above produces the same final result as before,
+  //      so the click would otherwise feel dead.
   if (!rfb) return;
-  // Only autoscale when the user is at the default (fit) zoom. A
-  // rotation or orientation change must not clobber a focal zoom the
-  // user picked via the slider.
-  if (userZoom === 100 && rfb.scaleViewport) {
-    try { rfb._updateScale(); } catch (e) {}
-    captureFitScale();
-  }
-  // Always refresh the framebuffer so stale pixels redraw after a
-  // reconnect or a viewport change.
+  setStatus('ok', 'refitting + refreshing framebuffer…');
+  try { rfb._updateScale(); } catch (e) { /* defensive */ }
   try {
     RFB.messages.fbUpdateRequest(rfb._sock, false, 0, 0, rfb._fbWidth, rfb._fbHeight);
-  } catch (e) {}
+  } catch (e) { /* defensive */ }
+  setTimeout(() => setStatus('ok', 'refreshed (' + (rfb._fbWidth || 0) + 'x' + (rfb._fbHeight || 0) + ')'), 350);
 }
 
 // RFB exposes these three settings specifically for viewport navigation.
 // We use its native clipping/dragging behaviour rather than changing canvas
 // size or applying CSS transforms, which would invalidate tap coordinates.
-function captureFitScale() {
-  if (rfb && rfb._display && rfb._display._scale > 0) {
-    fitScale = rfb._display._scale;
+function setViewportMode(mode) {
+  if (!rfb) return;
+  if (mode === 'reset') mode = 'fit';
+  viewportMode = mode;
+  rfb.resizeSession = false;
+  if (mode === 'fit') {
+    rfb.scaleViewport = true;
+    rfb.clipViewport = true;
+    rfb.dragViewport = false;
+  } else if (mode === 'exact') {
+    rfb.scaleViewport = false;
+    rfb.clipViewport = true;
+    rfb.dragViewport = false;
+  } else if (mode === 'pan') {
+    rfb.scaleViewport = false;
+    rfb.clipViewport = true;
+    rfb.dragViewport = true;
+  }
+  try { rfb._updateScale(); } catch (e) { /* RFB applies on next frame */ }
+  const controls = document.getElementById('viewport-controls');
+  if (controls) {
+    controls.querySelectorAll('button[data-viewport]').forEach((button) => {
+      const active = button.dataset.viewport === viewportMode;
+      button.classList.toggle('active', active);
+      button.setAttribute('aria-pressed', String(active));
+    });
   }
 }
 
-function updateZoomLabel() {
-  const label = document.getElementById('zoomlabel');
-  if (label) label.textContent = userZoom + '%';
-}
-
-function setZoom(percent) {
-  if (!rfb) return;
-  userZoom = Math.max(50, Math.min(300, Math.round(percent)));
-  updateZoomLabel();
-  rfb.scaleViewport = false;
-  rfb.clipViewport = true;
-  rfb.dragViewport = false;
-  if (fitScale <= 0) fitScale = 1.0;
-  const newScale = fitScale * (userZoom / 100);
-  const oldScale = rfb._display._scale || fitScale;
-  rfb._display.scale = newScale;
-  if (lastTap) {
-    const dx = lastTap.x * (1 / oldScale - 1 / newScale);
-    const dy = lastTap.y * (1 / oldScale - 1 / newScale);
-    if (Math.abs(dx) > 0.01 || Math.abs(dy) > 0.01) {
-      try { rfb._display.viewportChangePos(dx, dy); } catch (e) {}
-    }
-  }
-}
-
-function resetZoom() {
-  userZoom = 100;
-  const slider = document.getElementById('zoomslider');
-  if (slider) slider.value = '100';
-  updateZoomLabel();
-  if (!rfb) return;
-  rfb.scaleViewport = true;
-  rfb.clipViewport = true;
-  rfb.dragViewport = false;
-  try { rfb._updateScale(); } catch (e) {}
-  captureFitScale();
-  lastTap = null;
-}
-
-function installZoomControls() {
+function installViewportControls() {
   const existing = document.getElementById('viewport-controls');
   if (existing) existing.remove();
   const controls = document.createElement('div');
   controls.id = 'viewport-controls';
-  controls.setAttribute('aria-label', 'Mobile zoom controls');
+  controls.setAttribute('aria-label', 'Mobile viewport controls');
   controls.innerHTML = [
-    '<button type="button" id="zoomfitbtn" title="Reset to fit">Fit</button>',
-    '<input type="range" id="zoomslider" min="50" max="300" step="5" value="100" aria-label="Zoom">',
-    '<span id="zoomlabel">100%</span>',
+    '<button type="button" data-viewport="fit" title="Fit the desktop to the phone">Fit</button>',
+    '<button type="button" data-viewport="exact" title="Show the desktop at 100% size">100%</button>',
+    '<button type="button" data-viewport="pan" title="Drag to move the 100% viewport">Pan</button>',
+    '<button type="button" data-viewport="reset" title="Return to the fitted view">Reset</button>',
   ].join('');
   controls.addEventListener('click', (event) => {
-    if (event.target.id === 'zoomfitbtn') {
-      event.preventDefault();
-      event.stopPropagation();
-      resetZoom();
-    }
-  });
-  controls.addEventListener('input', (event) => {
-    if (event.target.id === 'zoomslider') {
-      setZoom(parseInt(event.target.value, 10));
-    }
+    const button = event.target.closest('button[data-viewport]');
+    if (!button) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setViewportMode(button.dataset.viewport);
   });
   screen.appendChild(controls);
-  userZoom = 100;
-  updateZoomLabel();
+  setViewportMode('fit');
 }
 
 // Mobile browsers alter the visual viewport when their software keyboard,
