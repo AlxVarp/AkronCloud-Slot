@@ -700,6 +700,7 @@ export class Mt5Connector implements BrokerConnector {
     }
     if (evt.kind !== 'fill'
      && evt.kind !== 'order_state'
+     && evt.kind !== 'position'
      && evt.kind !== 'account') {
       log.debug({ kind: evt.kind }, 'mt5 TCP: unhandled event');
       return;
@@ -767,8 +768,28 @@ export class Mt5Connector implements BrokerConnector {
                    ?? evt.data.order_id
                    ?? '',
             status: evt.data.status as OrderStatus,
+            event: evt.data.event,
+            order_state: evt.data.order_state,
+            order_type: evt.data.order_type,
+            symbol: evt.data.symbol,
+            volume: evt.data.volume,
+            price: evt.data.price,
+            sl: evt.data.sl,
+            tp: evt.data.tp,
           },
         },
+        ref,
+      );
+      return;
+    }
+
+    if (evt.kind === 'position') {
+      this.emitToBus(
+        { kind: 'position', data: {
+          position_id: evt.data.position_id ?? evt.data.order_id ?? '',
+          event: evt.data.event,
+          symbol: evt.data.symbol,
+        } },
         ref,
       );
       return;

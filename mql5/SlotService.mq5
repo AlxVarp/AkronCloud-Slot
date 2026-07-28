@@ -36,7 +36,7 @@
 //
 //+------------------------------------------------------------------+
 #property copyright "akroncloud-slot"
-#property version   "2.14"
+#property version   "2.15"
 #property service
 #property strict  false
 
@@ -269,13 +269,46 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
    {
       kind = "order_state";
       data = StringFormat(
-         "{\"order_id\":\"%I64d\",\"status\":\"updated\"}", trans.order);
+         "{\"order_id\":\"%I64d\",\"status\":\"pending\",\"event\":\"history_updated\",\"order_state\":%d,\"symbol\":\"%s\"}",
+         trans.order, trans.order_state, JsonEscape(trans.symbol));
+   }
+   else if(trans.type == TRADE_TRANSACTION_ORDER_ADD)
+   {
+      kind = "order_state";
+      data = StringFormat(
+         "{\"order_id\":\"%I64d\",\"status\":\"pending\",\"event\":\"created\",\"order_state\":%d,\"order_type\":%d,\"symbol\":\"%s\",\"volume\":%.8f,\"price\":%.8f,\"sl\":%.8f,\"tp\":%.8f}",
+         trans.order, trans.order_state, trans.order_type, JsonEscape(trans.symbol),
+         trans.volume, trans.price, trans.price_sl, trans.price_tp);
+   }
+   else if(trans.type == TRADE_TRANSACTION_ORDER_UPDATE)
+   {
+      kind = "order_state";
+      data = StringFormat(
+         "{\"order_id\":\"%I64d\",\"status\":\"pending\",\"event\":\"updated\",\"order_state\":%d,\"order_type\":%d,\"symbol\":\"%s\",\"volume\":%.8f,\"price\":%.8f,\"sl\":%.8f,\"tp\":%.8f}",
+         trans.order, trans.order_state, trans.order_type, JsonEscape(trans.symbol),
+         trans.volume, trans.price, trans.price_sl, trans.price_tp);
+   }
+   else if(trans.type == TRADE_TRANSACTION_ORDER_DELETE)
+   {
+      kind = "order_state";
+      data = StringFormat(
+         "{\"order_id\":\"%I64d\",\"status\":\"cancelled\",\"event\":\"deleted\",\"order_state\":%d,\"order_type\":%d,\"symbol\":\"%s\",\"volume\":%.8f,\"price\":%.8f}",
+         trans.order, trans.order_state, trans.order_type, JsonEscape(trans.symbol),
+         trans.volume, trans.price);
+   }
+   else if(trans.type == TRADE_TRANSACTION_HISTORY_DELETE)
+   {
+      kind = "order_state";
+      data = StringFormat(
+         "{\"order_id\":\"%I64d\",\"status\":\"cancelled\",\"event\":\"history_deleted\",\"order_state\":%d,\"symbol\":\"%s\"}",
+         trans.order, trans.order_state, JsonEscape(trans.symbol));
    }
    else if(trans.type == TRADE_TRANSACTION_POSITION)
    {
       kind = "position";
       data = StringFormat(
-         "{\"order_id\":\"%I64d\",\"symbol\":\"%s\"}", trans.position, trans.symbol);
+         "{\"position_id\":\"%I64d\",\"event\":\"updated\",\"symbol\":\"%s\"}",
+         trans.position, JsonEscape(trans.symbol));
    }
    else
    {

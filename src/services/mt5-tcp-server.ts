@@ -57,6 +57,14 @@ const OrderStateEvent = z.object({
     order_id: z.string().optional(),
     broker_order_id: z.string().optional(),
     status: z.string(),
+    event: z.string().optional(),
+    order_state: z.number().optional(),
+    order_type: z.number().optional(),
+    symbol: z.string().optional(),
+    volume: z.number().optional(),
+    price: z.number().optional(),
+    sl: z.number().optional(),
+    tp: z.number().optional(),
   }),
   ts: z.number().optional(),
 });
@@ -66,6 +74,8 @@ const PositionEvent = z.object({
   kind: z.literal('position'),
   data: z.object({
     order_id: z.string().optional(),
+    position_id: z.string().optional(),
+    event: z.string().optional(),
     symbol: z.string().optional(),
   }),
   ts: z.number().optional(),

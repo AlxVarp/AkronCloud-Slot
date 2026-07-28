@@ -182,7 +182,12 @@ export type AccountEvent = {
 
 export type BrokerEvent =
   | { kind: 'fill'; data: Fill }
-  | { kind: 'order_state'; data: { order_id: string; status: OrderStatus } }
+  | { kind: 'order_state'; data: {
+    order_id: string; status: OrderStatus; event?: string; order_state?: number;
+    order_type?: number; symbol?: string; volume?: number; price?: number;
+    sl?: number; tp?: number;
+  } }
+  | { kind: 'position'; data: { position_id: string; event?: string; symbol?: string } }
   | { kind: 'account'; data: AccountEvent };
 
 export type AccountState = {

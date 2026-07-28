@@ -15,7 +15,7 @@ import { ProblemError } from '../problem.js';
  * Wire format (server → client):
  *
  *   { "type": "event",
- *     "kind": "fill" | "order_state" | "account",
+ *     "kind": "fill" | "order_state" | "position" | "account",
  *     "data": { ... },
  *     "ts":   <epoch ms> }
  *
