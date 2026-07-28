@@ -566,17 +566,19 @@ export class Mt5Connector implements BrokerConnector {
     orderId: string,
     sl: number | null,
     tp: number | null,
+    price?: number | null,
   ): Promise<{ ok: boolean; reason?: string }> {
     const rec = this.accounts.get(accountRef);
     if (!rec) return { ok: false, reason: 'unknown accountRef' };
     try {
       const result = await this.mt5Query<{ modified?: boolean; sl?: number; tp?: number }>(
-        'sltp',
+        'modify_order',
         {
           account_id: rec.broker_login,
           order_id: orderId,
           sl,
           tp,
+          price,
         },
       );
       return { ok: result.modified !== false };

@@ -83,11 +83,12 @@ const ModifyPositionSchema = z
 
 const ModifyOrderSchema = z
   .object({
+    price: z.number().positive().optional(),
     sl: z.number().nullable().optional(),
     tp: z.number().nullable().optional(),
   })
-  .refine((v) => v.sl !== undefined || v.tp !== undefined, {
-    message: 'at least one of sl, tp must be provided',
+  .refine((v) => v.price !== undefined || v.sl !== undefined || v.tp !== undefined, {
+    message: 'at least one of price, sl or tp must be provided',
   });
 
 /**
@@ -348,6 +349,7 @@ export async function tradingRoutes(app: FastifyInstance): Promise<void> {
           req.params.id,
           body.sl ?? null,
           body.tp ?? null,
+          body.price ?? null,
         ),
       );
     },

@@ -243,6 +243,7 @@ export class SimConnector implements BrokerConnector {
     _orderId: string,
     _sl: number | null,
     _tp: number | null,
+    _price?: number | null,
   ): Promise<{ ok: boolean; reason?: string }> {
     return { ok: true };
   }

@@ -135,19 +135,38 @@ def run(action: str, payload: dict[str, Any]) -> dict[str, Any]:
         if tick is None:
             raise RuntimeError("quote_unavailable")
         is_buy = side == "buy"
-        price = tick.ask if is_buy else tick.bid
-        result = mt5.order_send({
-            "action": mt5.TRADE_ACTION_DEAL,
+        kind = str(payload.get("type") or "market").lower()
+        if kind not in ("market", "limit", "stop"):
+            raise RuntimeError("invalid_order_type")
+        if kind != "market" and not payload.get("price"):
+            raise RuntimeError("pending_order_requires_price")
+        price = float(payload.get("price") or (tick.ask if is_buy else tick.bid))
+        if kind == "limit":
+            action_code = mt5.TRADE_ACTION_PENDING
+            order_type = mt5.ORDER_TYPE_BUY_LIMIT if is_buy else mt5.ORDER_TYPE_SELL_LIMIT
+        elif kind == "stop":
+            action_code = mt5.TRADE_ACTION_PENDING
+            order_type = mt5.ORDER_TYPE_BUY_STOP if is_buy else mt5.ORDER_TYPE_SELL_STOP
+        else:
+            action_code = mt5.TRADE_ACTION_DEAL
+            order_type = mt5.ORDER_TYPE_BUY if is_buy else mt5.ORDER_TYPE_SELL
+        request = {
+            "action": action_code,
             "symbol": symbol,
             "volume": volume,
-            "type": mt5.ORDER_TYPE_BUY if is_buy else mt5.ORDER_TYPE_SELL,
+            "type": order_type,
             "price": price,
             "deviation": int(payload.get("deviation") or 10),
             "sl": float(payload.get("sl") or 0),
             "tp": float(payload.get("tp") or 0),
             "comment": str(payload.get("comment") or "akroncloud"),
-            "type_filling": mt5.ORDER_FILLING_FOK,
-        })
+        }
+        if kind == "market":
+            request["type_filling"] = mt5.ORDER_FILLING_FOK
+        checked = mt5.order_check(request)
+        if checked is None or checked.retcode != mt5.TRADE_RETCODE_DONE:
+            raise trade_failed("order_check_failed", checked)
+        result = mt5.order_send(request)
         if result is None or result.retcode not in (mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED):
             raise trade_failed("order_send_failed", result)
         publish_execution(result, symbol=symbol, volume=volume, price=price)
@@ -156,6 +175,27 @@ def run(action: str, payload: dict[str, Any]) -> dict[str, Any]:
             "broker_order_id": str(result.order),
             "deal": str(result.deal),
         }
+
+    if action == "modify_order":
+        ticket = int(payload.get("order_id") or payload.get("ticket") or 0)
+        orders = mt5.orders_get(ticket=ticket) or ()
+        if not orders:
+            raise RuntimeError("pending_order_not_found")
+        current = orders[0]
+        request = {
+            "action": mt5.TRADE_ACTION_MODIFY, "order": ticket,
+            "price": float(payload.get("price") or current.price_open),
+            "sl": float(payload.get("sl") or current.sl),
+            "tp": float(payload.get("tp") or current.tp),
+            "type_time": current.type_time, "expiration": current.time_expiration,
+        }
+        checked = mt5.order_check(request)
+        if checked is None or checked.retcode != mt5.TRADE_RETCODE_DONE:
+            raise trade_failed("modify_check_failed", checked)
+        result = mt5.order_send(request)
+        if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
+            raise trade_failed("modify_failed", result)
+        return {"modified": True, "order_id": str(ticket)}
 
     if action == "close":
         ticket = int(payload.get("position_id") or payload.get("ticket") or 0)

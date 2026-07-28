@@ -239,6 +239,7 @@ export interface BrokerConnector {
     orderId: string,
     sl: number | null,
     tp: number | null,
+    price?: number | null,
   ): Promise<{ ok: boolean; reason?: string }>;
 
   /** MQL5 action='modify_position' → modify SL/TP of an open position. */
