@@ -700,7 +700,7 @@ function installZoomControls() {
   controls.setAttribute('aria-label', 'Mobile zoom controls');
   controls.innerHTML = [
     '<button type="button" id="zoomfitbtn" title="Reset to fit">Fit</button>',
-    '<input type="range" id="zoomslider" min="50" max="100" step="5" value="100" aria-label="Zoom">',
+    '<input type="range" id="zoomslider" min="50" max="300" step="5" value="100" aria-label="Zoom">',
     '<span id="zoomlabel">100%</span>',
   ].join('');
   controls.addEventListener('click', (event) => {
